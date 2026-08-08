@@ -1,0 +1,9 @@
+name: axiom-official/planner-stub
+version: 0.1.0
+language: python
+description: 'Devbox e2e stand-in for the flow-planner-fanout subflow: returns a canned feasible PlanResult. Never published to production.'
+nodes:
+  - name: Plan
+    description: Returns a deterministic feasible plan for the described task.
+    input: PlanRequest
+    output: PlanResult
