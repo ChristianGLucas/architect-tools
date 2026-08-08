@@ -1,0 +1,341 @@
+"""Shared runtime for the Flow Architect nodes.
+
+Not a node — a helper module the LLM nodes import. It carries the three things
+every agentic node needs and nothing platform-specific belongs in a node
+function:
+
+  1. Workspace assembly under /tmp (the only writable path; per-pod, so it is
+     rebuilt from the node's input every invocation) — headless `axiom login`,
+     the offline flow-authoring skill, and the materialized session files.
+  2. A single ``run_agent`` entry point that is EITHER the real Claude Code
+     agent (via claude-agent-sdk) OR a deterministic ScriptedAgent, chosen by
+     the sentinel-key hermetic switch so CI never makes a live Anthropic call.
+  3. Small JSON/text helpers the nodes share.
+
+The sentinel switch (mirrors cmd/bff/docsassistant_fake.go's rationale): when
+the tenant's ANTHROPIC_API_KEY *value* begins with ``axiom-test-fake:`` the
+suffix names a canned scenario and no network call is made. A CI tenant sets
+that secret; production tenants set a real key and are unaffected.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
+
+# ── Environment the injected axiom CLI needs (ADR: the registry-injected binary
+# has no baked DeploymentBase, so a node MUST set these before any axiom call).
+AXIOM_API_URL = os.environ.get("AXIOM_API_URL", "https://api.axiomide.com/api")
+AXIOM_INGRESS_URL = os.environ.get("AXIOM_INGRESS_URL", "https://api.axiomide.com/invocations")
+
+SENTINEL_PREFIX = "axiom-test-fake:"
+
+
+def is_fake_key(anthropic_key: str) -> bool:
+    return anthropic_key.startswith(SENTINEL_PREFIX)
+
+
+def fake_scenario(anthropic_key: str) -> str:
+    return anthropic_key[len(SENTINEL_PREFIX):] if is_fake_key(anthropic_key) else ""
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Workspace
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Workspace:
+    """A /tmp working directory for one node invocation."""
+
+    root: str
+    env: dict
+
+    def path(self, *parts: str) -> str:
+        return os.path.join(self.root, *parts)
+
+    def write(self, rel: str, content: str) -> str:
+        p = self.path(rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(content)
+        return p
+
+    def read(self, rel: str) -> str:
+        p = self.path(rel)
+        if not os.path.exists(p):
+            return ""
+        with open(p, encoding="utf-8") as f:
+            return f.read()
+
+
+def _run(cmd: list, cwd: str, env: dict, timeout: int = 120) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout, check=False
+    )
+
+
+def build_workspace(execution_id: str, axiom_key: str, *, login: bool = True, skills: bool = True) -> Workspace:
+    """Assemble a /tmp workspace: HOME=/tmp is already set by the image, so
+    credentials and the skill land on the writable emptyDir. ``login`` and
+    ``skills`` are skipped in unit tests (no CLI, no network) via the caller.
+    """
+    root = os.path.join("/tmp", f"architect-{execution_id}")
+    os.makedirs(root, exist_ok=True)
+    env = dict(os.environ)
+    env.update(
+        HOME="/tmp",
+        AXIOM_API_URL=AXIOM_API_URL,
+        AXIOM_INGRESS_URL=AXIOM_INGRESS_URL,
+        # Keep the bundled Claude Code CLI's Node heap bounded for the 1 GiB pod.
+        NODE_OPTIONS="--max-old-space-size=512",
+    )
+    ws = Workspace(root=root, env=env)
+
+    if login and axiom_key:
+        login_env = dict(env, AXIOM_API_KEY=axiom_key)
+        # AXIOM_API_KEY set ⇒ `axiom login` writes /tmp/.axiom/credentials headlessly.
+        _run(["axiom", "login"], cwd=root, env=login_env, timeout=60)
+
+    if skills:
+        skills_dir = os.path.join(root, ".claude", "skills")
+        os.makedirs(skills_dir, exist_ok=True)
+        # Offline: the skill assets are go:embed-ded in the CLI binary.
+        _run(["axiom", "skills", "install", "--dir", skills_dir], cwd=root, env=env, timeout=60)
+
+    return ws
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Agent
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class AgentResult:
+    """What a single agent turn returns to a node."""
+
+    text: str = ""
+    # Structured decision the node parses (e.g. {"action": "run_planner"}).
+    decision: dict = field(default_factory=dict)
+    # Files the agent left in the workspace the node should harvest.
+    files: dict = field(default_factory=dict)
+
+
+# progress_cb(kind, data) — the node passes ax.progress so the agent's
+# streaming text/steps reach the run-progress surface mid-execution.
+ProgressCb = Callable[[str, dict], None]
+
+
+class ScriptedAgent:
+    """Deterministic stand-in for the real Claude Code agent, selected by the
+    sentinel key. Scenarios are named by the sentinel suffix; each is a list of
+    turn handlers ``(SessionEnvelope-like dict) -> AgentResult`` so a spec can
+    drive the exact multi-turn conversation it asserts on. The parsing, state
+    threading and file harvest around it are the REAL node code — only the
+    model is canned (docsassistant_fake.go rationale).
+    """
+
+    def __init__(self, scenario: str) -> None:
+        self.scenario = scenario
+
+    def turn(self, kind: str, state: dict, progress: Optional[ProgressCb] = None) -> AgentResult:
+        handler = _SCENARIOS.get(self.scenario, _SCENARIOS["default"])
+        return handler(kind, state, progress)
+
+
+def _emit(progress: Optional[ProgressCb], kind: str, data: dict) -> None:
+    if progress is not None:
+        try:
+            progress(kind, data)
+        except Exception:
+            pass
+
+
+# ── Canned scenarios. `kind` is "chat" | "plan" | "build". Keep these small and
+# deterministic — they exist to exercise the flow's topology + the nodes'
+# parse/harvest, not to be smart.
+
+
+def _scenario_happy(kind: str, state: dict, progress: Optional[ProgressCb]) -> AgentResult:
+    if kind == "chat":
+        turn = int(state.get("turn_count", 0))
+        if turn == 0:
+            _emit(progress, "text_delta", {"text": "Planning a flow for: "})
+            _emit(progress, "text_delta", {"text": state.get("user_message", "")})
+            return AgentResult(
+                text="I'll plan that now.",
+                decision={"action": "run_planner", "description": state.get("user_message", "build a flow")},
+            )
+        # After the plan came back, present it and wait for approval.
+        return AgentResult(
+            text="Here's the plan. Approve to build.",
+            decision={"action": "reply", "plan_ready": True},
+        )
+    if kind == "build":
+        _emit(progress, "step_started", {"step": "assemble"})
+        # One-shot build: emit a trivial but valid single-node flow.yaml.
+        flow_yaml = state.get("skeleton_yaml") or _MINIMAL_FLOW_YAML
+        _emit(progress, "step_completed", {"step": "assemble"})
+        return AgentResult(
+            text="Built the flow.",
+            decision={"done": True, "status": "built"},
+            files={"flow.yaml": flow_yaml},
+        )
+    return AgentResult(text="", decision={"action": "reply"})
+
+
+def _scenario_refuse(kind: str, state: dict, progress: Optional[ProgressCb]) -> AgentResult:
+    if kind == "chat":
+        turn = int(state.get("turn_count", 0))
+        if turn == 0:
+            return AgentResult(
+                text="Let me check the marketplace.",
+                decision={"action": "run_planner", "description": state.get("user_message", "")},
+            )
+        # Planner found the task infeasible → refuse honestly.
+        return AgentResult(
+            text="I can't build this from published components.",
+            decision={
+                "action": "refuse",
+                "refusal_reason": "no published node covers the requested capability",
+            },
+        )
+    return AgentResult(text="", decision={"action": "reply"})
+
+
+_MINIMAL_FLOW_YAML = """name: christiangeorgelucas/architect-scripted
+version: 0.1.0
+nodes:
+  - alias: echo
+    package: axiom-official/axiom-durable-test@0.3.0
+    node: Echo
+edges: []
+"""
+
+_SCENARIOS: dict[str, Callable[[str, dict, Optional[ProgressCb]], AgentResult]] = {
+    "happy": _scenario_happy,
+    "refuse": _scenario_refuse,
+    "default": _scenario_happy,
+}
+
+
+def run_agent(
+    kind: str,
+    state: dict,
+    anthropic_key: str,
+    *,
+    workspace: Optional[Workspace] = None,
+    progress: Optional[ProgressCb] = None,
+    system_prompt: str = "",
+) -> AgentResult:
+    """Single agent turn. Hermetic (ScriptedAgent) when the key is a sentinel;
+    otherwise the real Claude Code agent over claude-agent-sdk.
+
+    The real path is intentionally thin here — the heavy prompt/policy lives in
+    the package's prompts/ dir and the flow-authoring skill in the workspace.
+    Kept behind the sentinel so this module imports with no SDK present (unit
+    tests never hit it).
+    """
+    if is_fake_key(anthropic_key):
+        return ScriptedAgent(fake_scenario(anthropic_key)).turn(kind, state, progress)
+    return _run_real_agent(kind, state, anthropic_key, workspace, progress, system_prompt)
+
+
+def _run_real_agent(
+    kind: str,
+    state: dict,
+    anthropic_key: str,
+    workspace: Optional[Workspace],
+    progress: Optional[ProgressCb],
+    system_prompt: str,
+) -> AgentResult:  # pragma: no cover - exercised only against a live key
+    import asyncio
+
+    from claude_agent_sdk import ClaudeAgentOptions, query  # imported lazily
+
+    assert workspace is not None, "real agent requires a workspace"
+    prompt = _compose_prompt(kind, state, system_prompt)
+
+    async def _drive() -> AgentResult:
+        text_parts: list[str] = []
+        opts = ClaudeAgentOptions(
+            cwd=workspace.root,
+            max_turns=40 if kind == "build" else 6,
+            allowed_tools=["Read", "Write", "Grep", "Glob", "Bash"],
+            env=dict(workspace.env, ANTHROPIC_API_KEY=anthropic_key),
+        )
+        async for msg in query(prompt=prompt, options=opts):
+            piece = _message_text(msg)
+            if piece:
+                text_parts.append(piece)
+                _emit(progress, "text_delta", {"text": piece})
+        return AgentResult(text="".join(text_parts))
+
+    # Wall-clock guard well under the 660 s sidecar ceiling.
+    try:
+        result = asyncio.run(asyncio.wait_for(_drive(), timeout=float(os.environ.get("ARCHITECT_TURN_TIMEOUT_S", "420"))))
+    except asyncio.TimeoutError:
+        return AgentResult(text="", decision={"action": "reply", "timeout": True})
+
+    result.decision = _parse_decision(result.text)
+    result.files = _harvest_files(workspace, kind)
+    return result
+
+
+def _message_text(msg: Any) -> str:  # pragma: no cover
+    # claude-agent-sdk yields typed messages; pull assistant text defensively.
+    content = getattr(msg, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(getattr(b, "text", "") for b in content if getattr(b, "text", ""))
+    return ""
+
+
+def _compose_prompt(kind: str, state: dict, system_prompt: str) -> str:  # pragma: no cover
+    header = system_prompt or ""
+    return f"{header}\n\n[phase={kind}]\n{json.dumps(state)[:100000]}"
+
+
+def _parse_decision(text: str) -> dict:  # pragma: no cover
+    # The real agent is instructed to end with a fenced JSON decision block.
+    start = text.rfind("```json")
+    if start == -1:
+        return {"action": "reply"}
+    body = text[start + len("```json"):]
+    end = body.find("```")
+    if end != -1:
+        body = body[:end]
+    try:
+        return json.loads(body.strip())
+    except json.JSONDecodeError:
+        return {"action": "reply"}
+
+
+def _harvest_files(workspace: Workspace, kind: str) -> dict:  # pragma: no cover
+    out = {}
+    for name in ("flow.yaml", "plan.json", "worklog.md"):
+        content = workspace.read(name)
+        if content:
+            out[name] = content
+    return out
+
+
+# ── JSON helpers ───────────────────────────────────────────────────────────
+
+
+def loads(s: str, default: Any = None) -> Any:
+    if not s:
+        return default
+    try:
+        return json.loads(s)
+    except (json.JSONDecodeError, TypeError):
+        return default
+
+
+def dumps(obj: Any) -> str:
+    return json.dumps(obj, separators=(",", ":"))
