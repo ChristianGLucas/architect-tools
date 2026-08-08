@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0emessages.proto\x12\x1b\x61xiom_official.planner_stub\"1\n\x0bPlanRequest\x12\x13\n\x0b\x64\x65scription\x18\x01 \x01(\t\x12\r\n\x05model\x18\x02 \x01(\t\"I\n\nPlanResult\x12\x10\n\x08\x66\x65\x61sible\x18\x01 \x01(\x08\x12\x15\n\rskeleton_yaml\x18\x02 \x01(\t\x12\x12\n\nsteps_json\x18\x03 \x01(\tb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0emessages.proto\x12\x1b\x61xiom_official.planner_stub\"1\n\x0bPlanRequest\x12\x13\n\x0b\x64\x65scription\x18\x01 \x01(\t\x12\r\n\x05model\x18\x02 \x01(\t\"^\n\x08PlanStep\x12\x0f\n\x07matched\x18\x01 \x01(\x08\x12\x0f\n\x07package\x18\x02 \x01(\t\x12\x0c\n\x04node\x18\x03 \x01(\t\x12\r\n\x05score\x18\x04 \x01(\x01\x12\x13\n\x0bpick_reason\x18\x05 \x01(\t\"k\n\nPlanResult\x12\x10\n\x08\x66\x65\x61sible\x18\x01 \x01(\x08\x12\x15\n\rskeleton_yaml\x18\x02 \x01(\t\x12\x34\n\x05steps\x18\x03 \x03(\x0b\x32%.axiom_official.planner_stub.PlanStepb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,6 +33,8 @@ if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_PLANREQUEST']._serialized_start=47
   _globals['_PLANREQUEST']._serialized_end=96
-  _globals['_PLANRESULT']._serialized_start=98
-  _globals['_PLANRESULT']._serialized_end=171
+  _globals['_PLANSTEP']._serialized_start=98
+  _globals['_PLANSTEP']._serialized_end=192
+  _globals['_PLANRESULT']._serialized_start=194
+  _globals['_PLANRESULT']._serialized_end=301
 # @@protoc_insertion_point(module_scope)

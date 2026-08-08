@@ -1,5 +1,5 @@
 name: axiom-official/planner-stub
-version: 0.1.0
+version: 0.1.1
 language: python
 description: 'Devbox e2e stand-in for the flow-planner-fanout subflow: returns a canned feasible PlanResult. Never published to production.'
 nodes:

@@ -10,8 +10,10 @@ class _Ctx:
             pass
 
 
-def test_returns_feasible_plan():
+def test_returns_feasible_plan_with_one_matched_step():
     out = plan(_Ctx(), PlanRequest(description="anything"))
     assert out.feasible is True
     assert out.skeleton_yaml
-    assert "Echo" in out.steps_json
+    assert len(out.steps) == 1
+    s = out.steps[0]
+    assert s.matched and s.node == "Echo" and s.package == "axiom-official/axiom-durable-test"

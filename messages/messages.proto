@@ -1,6 +1,7 @@
-// Devbox e2e planner stub contracts — mirrors the REAL planner subflow's
-// facade shape closely enough for flow-architect's plan_post: toJson() of
-// PlanResult must carry feasible + skeleton_yaml (+ steps as JSON).
+// Devbox e2e planner stub contracts — mirrors the REAL flow-planner-fanout
+// facade surface (feasible / skeleton_yaml / steps[] with matched/package/
+// node/score/pick_reason) closely enough that flow-architect's plan_post and
+// the editor's PlanCard behave exactly as they do against the real planner.
 syntax = "proto3";
 
 package axiom_official.planner_stub;
@@ -11,10 +12,18 @@ message PlanRequest {
   string model = 2;
 }
 
+// PlanStep is one plan step verdict, shaped like the real planner's.
+message PlanStep {
+  bool matched = 1;
+  string package = 2;
+  string node = 3;
+  double score = 4;
+  string pick_reason = 5;
+}
+
 // PlanResult is the canned plan the stub emits.
 message PlanResult {
   bool feasible = 1;
   string skeleton_yaml = 2;
-  // steps_json is a JSON array of {matched, package, node, score} objects.
-  string steps_json = 3;
+  repeated PlanStep steps = 3;
 }
