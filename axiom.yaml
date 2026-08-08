@@ -15,6 +15,11 @@ build:
   system_deps:
     - nodejs
     - axiom
+  # This is a two-runtime image (python + nodejs) that also pip-installs
+  # claude-agent-sdk (bundles the Claude Code CLI = thousands of files). It
+  # builds in <1m natively, but unpacking under the registry's gVisor sandbox
+  # crosses the default 15m budget. Raise it (floored + clamped to 30m).
+  timeout: "28m"
 
 nodes:
   - name: InitSession
