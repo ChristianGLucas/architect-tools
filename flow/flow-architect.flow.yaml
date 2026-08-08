@@ -95,7 +95,7 @@ nodes:
     package: christiangeorgelucas/architect-tools@0.1.0
     node: PostprocessPlan
     config:
-      join: { kind: AND, failure_policy: FAIL_FAST }
+      join: { kind: AND, failure_policy: TOLERATE_FAILURES }
       compose:
         compose_plan:
           # session state from the carrier edge (field picks)…
