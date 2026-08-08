@@ -13,12 +13,20 @@ message PlanRequest {
 }
 
 // PlanStep is one plan step verdict, shaped like the real planner's.
+//
+// FIELD NUMBERS ARE ALPHABETICAL BY NAME — deliberately. The flow facade
+// synthesized around this message numbers its nested fields alphabetically
+// (treeSynth sorts for determinism), while the @flow_output adapter copies
+// repeated-message bytes VERBATIM from this proto. Until the platform
+// transcodes nested messages across that boundary (filed:
+// backlog/facade-nested-message-transcode.md), the two numberings must
+// agree or every step field decodes shifted/zeroed.
 message PlanStep {
   bool matched = 1;
-  string package = 2;
-  string node = 3;
-  double score = 4;
-  string pick_reason = 5;
+  string node = 2;
+  string package = 3;
+  string pick_reason = 4;
+  double score = 5;
 }
 
 // PlanResult is the canned plan the stub emits.
