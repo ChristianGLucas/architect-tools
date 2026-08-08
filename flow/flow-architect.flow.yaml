@@ -53,6 +53,9 @@ output_facade:
     updated_graph_json:
       kind: string
       description: The SourceGraph the editor applies (status done).
+    flow_yaml:
+      kind: string
+      description: The final flow.yaml (status done; possibly partial on failed).
     missing_capabilities_json:
       kind: string
       description: Gap detail (status refused).
@@ -244,4 +247,4 @@ edges:
   - { from: err_shape, to: finalize }
 
   # Terminal.
-  - { from: finalize, to: "@flow_output", adapter: { status: status, summary: summary, updated_graph_json: updated_graph_json, missing_capabilities_json: missing_capabilities_json, verify_report_json: verify_report_json, error: error } }
+  - { from: finalize, to: "@flow_output", adapter: { status: status, summary: summary, updated_graph_json: updated_graph_json, flow_yaml: flow_yaml, missing_capabilities_json: missing_capabilities_json, verify_report_json: verify_report_json, error: error } }
