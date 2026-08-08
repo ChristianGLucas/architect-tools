@@ -148,7 +148,7 @@ nodes:
 
 edges:
   # Entry.
-  - { from: "@flow_input", to: init, adapter: { graph_id: graph_id, client_graph_json: graph_source_json, user_message: user_message, model: model } }
+  - { from: "@flow_input", to: init, adapter: { draft_graph_id: graph_id, client_graph_json: graph_source_json, user_message: user_message, model: model } }
   - { from: init, to: agent_turn }
 
   # Chat-loop dispatch out of a turn. A plain reply and a post-plan review both
