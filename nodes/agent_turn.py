@@ -22,8 +22,19 @@ def agent_turn(ax: AxiomContext, input: SessionEnvelope) -> SessionEnvelope:
         _mark_refuse(out)
         return out
 
+    # The real agent needs a workspace even for a chat turn (marketplace
+    # lookups via the axiom CLI, the flow-authoring skill, the current draft to
+    # inspect). The scripted/sentinel path never touches one — which is exactly
+    # how this call shipped without it and only failed on the first LIVE turn.
+    axiom_key, _ = ax.secrets.get("AXIOM_API_KEY")
+    ws = None
+    if not rt.is_fake_key(anthropic):
+        ws = rt.build_workspace(ax.execution_id, axiom_key, login=True, skills=True)
+        if input.current_flow_yaml:
+            ws.write("flow.yaml", input.current_flow_yaml)
+
     state = _state_dict(input)
-    result = rt.run_agent("chat", state, anthropic, progress=_progress(ax))
+    result = rt.run_agent("chat", state, anthropic, workspace=ws, progress=_progress(ax))
     decision = result.decision or {}
 
     out = SessionEnvelope()
