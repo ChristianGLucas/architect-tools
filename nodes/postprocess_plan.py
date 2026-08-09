@@ -21,7 +21,10 @@ def postprocess_plan(ax: AxiomContext, input: SessionEnvelope) -> SessionEnvelop
     out.phase = "plan_review"
 
     plan = rt.loads(input.plan_json, default={}) or {}
-    steps = plan.get("steps", []) or []
+    # The planner's facade carries the per-step list as steps_json (a JSON
+    # string) until nested-facade transcoding lands platform-side; older/typed
+    # shapes carry a real steps array. Accept both.
+    steps = plan.get("steps") or rt.loads(plan.get("steps_json") or "[]", default=[]) or []
     real_missing = []
     for step in steps:
         if step.get("matched"):

@@ -73,26 +73,26 @@ run_config:
 
 nodes:
   - alias: init
-    package: christiangeorgelucas/architect-tools@0.1.0
+    package: christiangeorgelucas/architect-tools@0.1.1
     node: InitSession
 
   - alias: agent_turn
-    package: christiangeorgelucas/architect-tools@0.1.0
+    package: christiangeorgelucas/architect-tools@0.1.1
     node: AgentTurn
     config:
       retry: { max_attempts: 2, initial_interval_ms: 1000, backoff_coefficient: 2.0 }
 
   - alias: carrier
-    package: christiangeorgelucas/architect-tools@0.1.0
+    package: christiangeorgelucas/architect-tools@0.1.1
     node: Carrier
 
   - alias: planner_sub
-    subflow: 01KYZF0JD33S25BR96T9T92WY2   # christiangeorgelucas/flow-planner-fanout@0.4.0
-    input: PlanRequest
-    output: PlanResult
+    subflow: 01KZJAHZEEC4EFF427GR7WFCQ4   # christiangeorgelucas/flow-planner-fanout@0.5.0 (PlannerReport facade)
+    input: FlowPlannerFanoutInput
+    output: PlannerReport
 
   - alias: plan_post
-    package: christiangeorgelucas/architect-tools@0.1.0
+    package: christiangeorgelucas/architect-tools@0.1.1
     node: PostprocessPlan
     config:
       join: { kind: AND, failure_policy: TOLERATE_FAILURES }
@@ -112,7 +112,7 @@ nodes:
           plan_json:           { cel: 'toJson(inputs.planner_sub)' }
 
   - alias: await_user
-    package: christiangeorgelucas/architect-tools@0.1.0
+    package: christiangeorgelucas/architect-tools@0.1.1
     node: AwaitUser
     config:
       hitl:
@@ -122,29 +122,29 @@ nodes:
         timeout_policy: CANCEL
 
   - alias: rejoin
-    package: christiangeorgelucas/architect-tools@0.1.0
+    package: christiangeorgelucas/architect-tools@0.1.1
     node: Rejoin
     config:
       join: { kind: XOR }
 
   - alias: builder
-    package: christiangeorgelucas/architect-tools@0.1.0
+    package: christiangeorgelucas/architect-tools@0.1.1
     node: BuildStep
     config:
       retry: { max_attempts: 2, initial_interval_ms: 1000, backoff_coefficient: 2.0 }
 
   - alias: verify
-    package: christiangeorgelucas/architect-tools@0.1.0
+    package: christiangeorgelucas/architect-tools@0.1.1
     node: VerifyFlow
 
   - alias: err_shape
-    package: christiangeorgelucas/architect-tools@0.1.0
+    package: christiangeorgelucas/architect-tools@0.1.1
     node: ErrShape
     config:
       join: { kind: XOR }
 
   - alias: finalize
-    package: christiangeorgelucas/architect-tools@0.1.0
+    package: christiangeorgelucas/architect-tools@0.1.1
     node: FinalizeResult
     config:
       join: { kind: XOR }
