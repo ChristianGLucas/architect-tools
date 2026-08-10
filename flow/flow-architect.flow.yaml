@@ -73,17 +73,17 @@ run_config:
 
 nodes:
   - alias: init
-    package: christiangeorgelucas/architect-tools@0.1.2
+    package: christiangeorgelucas/architect-tools@0.1.3
     node: InitSession
 
   - alias: agent_turn
-    package: christiangeorgelucas/architect-tools@0.1.2
+    package: christiangeorgelucas/architect-tools@0.1.3
     node: AgentTurn
     config:
       retry: { max_attempts: 2, initial_interval_ms: 1000, backoff_coefficient: 2.0 }
 
   - alias: carrier
-    package: christiangeorgelucas/architect-tools@0.1.2
+    package: christiangeorgelucas/architect-tools@0.1.3
     node: Carrier
 
   - alias: planner_sub
@@ -92,7 +92,7 @@ nodes:
     output: PlannerReport
 
   - alias: plan_post
-    package: christiangeorgelucas/architect-tools@0.1.2
+    package: christiangeorgelucas/architect-tools@0.1.3
     node: PostprocessPlan
     config:
       join: { kind: AND, failure_policy: TOLERATE_FAILURES }
@@ -112,7 +112,7 @@ nodes:
           plan_json:           { cel: 'toJson(inputs.planner_sub)' }
 
   - alias: await_user
-    package: christiangeorgelucas/architect-tools@0.1.2
+    package: christiangeorgelucas/architect-tools@0.1.3
     node: AwaitUser
     config:
       hitl:
@@ -122,29 +122,29 @@ nodes:
         timeout_policy: CANCEL
 
   - alias: rejoin
-    package: christiangeorgelucas/architect-tools@0.1.2
+    package: christiangeorgelucas/architect-tools@0.1.3
     node: Rejoin
     config:
       join: { kind: XOR }
 
   - alias: builder
-    package: christiangeorgelucas/architect-tools@0.1.2
+    package: christiangeorgelucas/architect-tools@0.1.3
     node: BuildStep
     config:
       retry: { max_attempts: 2, initial_interval_ms: 1000, backoff_coefficient: 2.0 }
 
   - alias: verify
-    package: christiangeorgelucas/architect-tools@0.1.2
+    package: christiangeorgelucas/architect-tools@0.1.3
     node: VerifyFlow
 
   - alias: err_shape
-    package: christiangeorgelucas/architect-tools@0.1.2
+    package: christiangeorgelucas/architect-tools@0.1.3
     node: ErrShape
     config:
       join: { kind: XOR }
 
   - alias: finalize
-    package: christiangeorgelucas/architect-tools@0.1.2
+    package: christiangeorgelucas/architect-tools@0.1.3
     node: FinalizeResult
     config:
       join: { kind: XOR }
