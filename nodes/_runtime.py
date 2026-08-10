@@ -371,9 +371,40 @@ def _harvest_files(workspace: Workspace, kind: str) -> dict:  # pragma: no cover
     out = {}
     for name in ("flow.yaml", "plan.json", "worklog.md"):
         content = workspace.read(name)
+        if not content:
+            content = _find_nested(workspace.root, name)
         if content:
             out[name] = content
     return out
+
+
+def _find_nested(root: str, name: str) -> str:
+    # The build prompt tells the agent to write at the workspace top level, but
+    # an agent given free Read/Write/Bash access will sometimes organize its
+    # work into a sensibly-named project subdirectory anyway, with a
+    # descriptive filename mirroring this repo's own `<name>.flow.yaml`
+    # convention (found live: a completely successful build's flow was
+    # authored at ./echo/echo-message.flow.yaml, invisible to a strict
+    # top-level "flow.yaml" read — so a genuinely finished build looked, to
+    # the next self-loop chunk, exactly like no work had happened, forcing a
+    # full from-scratch retry every single chunk). Search shallowly (skip
+    # dotdirs — credentials/skills live there) for the exact filename, or for
+    # `flow.yaml` specifically, any file ending in `.flow.yaml`. The prompt
+    # instruction is still the primary contract; this just stops one
+    # deviation from being catastrophic.
+    suffix = f".{name}" if name == "flow.yaml" else None
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        match = next(
+            (f for f in filenames if f == name or (suffix and f.endswith(suffix))), None
+        )
+        if match:
+            try:
+                with open(os.path.join(dirpath, match), encoding="utf-8") as f:
+                    return f.read()
+            except OSError:
+                continue
+    return ""
 
 
 # ── JSON helpers ───────────────────────────────────────────────────────────

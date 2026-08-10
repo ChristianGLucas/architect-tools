@@ -21,6 +21,14 @@ Only report done=true once you have, for real, in this session:
 - saved it as an editable draft graph (axiom flow save)
 Do NOT publish — that is a separate, irreversible action the user takes later.
 
+Write your flow definition to exactly the path `flow.yaml` at the TOP of your
+working directory — not inside a project subdirectory, and not under any
+other filename. Only `flow.yaml`, `plan.json`, and `worklog.md` sitting
+directly in the working directory are captured as this chunk's output; a
+nicely-organized subdirectory (however well-named) is invisible to the
+platform, so a genuinely finished build reported from one will look, to the
+next chunk, exactly like no work ever happened.
+
 If you hit a genuine capability gap the marketplace cannot cover, stop and report it rather than improvising or fabricating a node.
 
 Always end your final message with a fenced decision block using this EXACT tag (not ```json — you will legitimately show real CLI/API JSON output inline while you work; use this dedicated tag only for the decision, never for anything else):
