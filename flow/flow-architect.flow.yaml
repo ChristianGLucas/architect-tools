@@ -117,17 +117,21 @@ edges:
       work_log_json: work_log_json
       round: round
 
-  # Build finished → terminal result (the user is the reviewer now).
+  # Build finished → terminal result (the user is the reviewer now). ONE edge
+  # for both outcomes — the platform allows a single forward edge per
+  # (source, destination) pair — with CEL ternaries picking the refusal shape
+  # when the agent gave up (capability gap or budget).
   - from: build
     to: finalize
-    condition: { op: CEL, cel: 'done && status == "built"' }
-    adapter: { status: "'done'", summary: summary, updated_graph_json: updated_graph_json, flow_yaml: flow_yaml, graph_id: graph_id, error: error }
-
-  # Build gave up honestly (capability gap or budget) → refusal.
-  - from: build
-    to: finalize
-    condition: { op: CEL, cel: 'done && status == "gave_up"' }
-    adapter: { status: "'refused'", summary: "'Could not build this from published marketplace components.'", missing_capabilities_json: gap_json, error: error, flow_yaml: flow_yaml }
+    condition: { op: CEL, cel: 'done' }
+    adapter:
+      status: 'status == "gave_up" ? "refused" : "done"'
+      summary: 'status == "gave_up" ? "Could not build this from published marketplace components." : summary'
+      updated_graph_json: updated_graph_json
+      missing_capabilities_json: gap_json
+      flow_yaml: flow_yaml
+      graph_id: graph_id
+      error: error
 
   # Error funnel. err_shape stays separate from finalize because a (from,to)
   # pair cannot carry both a normal and an on_error edge.
