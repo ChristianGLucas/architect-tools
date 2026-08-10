@@ -260,11 +260,18 @@ def _run_real_agent(
     assert workspace is not None, "real agent requires a workspace"
     prompt = _compose_prompt(kind, state, system_prompt)
 
+    # text_parts lives OUTSIDE _drive so a mid-stream exception (max-turns,
+    # transport drop) still leaves everything streamed so far harvestable.
+    text_parts: list[str] = []
+
     async def _drive() -> AgentResult:
-        text_parts: list[str] = []
         opts = ClaudeAgentOptions(
             cwd=workspace.root,
-            max_turns=40 if kind == "build" else 6,
+            # A chat turn that consults the marketplace legitimately needs a
+            # handful of tool rounds; 6 was exhausted by a single honest
+            # search-inspect-check loop (found live: the SDK RAISES on
+            # max-turns, killing the whole turn as a business error).
+            max_turns=40 if kind == "build" else 12,
             allowed_tools=["Read", "Write", "Grep", "Glob", "Bash"],
             env=dict(workspace.env, ANTHROPIC_API_KEY=anthropic_key),
         )
@@ -280,6 +287,26 @@ def _run_real_agent(
         result = asyncio.run(asyncio.wait_for(_drive(), timeout=float(os.environ.get("ARCHITECT_TURN_TIMEOUT_S", "420"))))
     except asyncio.TimeoutError:
         return AgentResult(text="", decision={"action": "reply", "timeout": True})
+    except Exception as exc:  # noqa: BLE001 — degrade, never kill the turn
+        # Reached-max-turns (and any other SDK-terminal error) must degrade to
+        # a normal reply carrying whatever was already streamed — the user saw
+        # that text arrive live; erroring the node retracts it into an opaque
+        # "business error" and dead-ends the session.
+        partial = "".join(text_parts).strip()
+        if not partial:
+            raise
+        _emit(progress, "text_delta", {"text": "\n\n(turn budget reached — continue the conversation to go on)"})
+        result = AgentResult(text=partial)
+        result.decision = _parse_decision(partial)
+        result.files = _harvest_files(workspace, kind)
+        if kind == "build":
+            # An unfinished build chunk is not "done" — let the self-loop
+            # continue from the harvested state.
+            result.decision.setdefault("done", False)
+        result.decision.setdefault("budget_exhausted", True)
+        _log_exc = f"{type(exc).__name__}: {exc}"
+        print(f"agent turn degraded to partial reply after: {_log_exc}", flush=True)
+        return result
 
     result.decision = _parse_decision(result.text)
     result.files = _harvest_files(workspace, kind)

@@ -126,19 +126,27 @@ message ErrInfo {
 }
 
 // ArchitectResult is the flow's terminal output.
+//
+// FIELD NUMBERS ARE ALPHABETICAL BY NAME — deliberately. This message crosses
+// the flow's OUTPUT boundary, where the platform's facade transcode numbers
+// facade fields alphabetically but copies the payload bytes verbatim
+// (backlog/facade-nested-message-transcode.md). With declaration-order
+// numbering every value shifted one field over in the flow output (status
+// landed under "error", summary under "flow_yaml", …). Keep any new field in
+// alphabetical position or the flow output silently corrupts again.
 message ArchitectResult {
-  // status is one of "done", "refused", "failed", "cancelled".
-  string status = 1;
-  // summary is the human-readable outcome.
-  string summary = 2;
-  // updated_graph_json is the SourceGraph to apply (status "done" only).
-  string updated_graph_json = 3;
-  // flow_yaml is the final flow.yaml (done; possibly partial on failed).
-  string flow_yaml = 4;
-  // missing_capabilities_json is the refusal detail (status "refused").
-  string missing_capabilities_json = 5;
-  // verify_report_json is the verifier's full report (status "done").
-  string verify_report_json = 6;
   // error is the failure description (status "failed").
-  string error = 7;
+  string error = 1;
+  // flow_yaml is the final flow.yaml (done; possibly partial on failed).
+  string flow_yaml = 2;
+  // missing_capabilities_json is the refusal detail (status "refused").
+  string missing_capabilities_json = 3;
+  // status is one of "done", "refused", "failed", "cancelled".
+  string status = 4;
+  // summary is the human-readable outcome.
+  string summary = 5;
+  // updated_graph_json is the SourceGraph to apply (status "done" only).
+  string updated_graph_json = 6;
+  // verify_report_json is the verifier's full report (status "done").
+  string verify_report_json = 7;
 }

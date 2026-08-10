@@ -3,6 +3,30 @@ from gen.axiom_context import AxiomContext
 
 from nodes import _runtime as rt
 
+# The chat turn's policy. A bounded DECIDING turn, not a working turn: the
+# first live session without this froze the roadmap into the agent — it
+# searched, inspected and even invoked marketplace nodes inside the chat turn
+# until it hit the SDK turn cap and the whole node errored. Planning belongs to
+# the planner subflow (run_planner); building belongs to the build phase.
+CHAT_PROMPT = """You are the Flow Architect: you help a user compose an Axiom flow from PUBLISHED marketplace components, working against their current draft.
+
+This is a bounded CHAT turn — decide the next move in at most a few tool calls:
+- reply: converse (clarify the request, answer questions, propose direction).
+- run_planner: the request is concrete enough to plan — delegate to the marketplace planner. Do NOT search deeply, build, or invoke nodes yourself in this turn.
+- refuse: ONLY after a planner round has shown the marketplace lacks what is needed.
+
+Always end with a fenced json block, one of:
+```json
+{"action": "reply"}
+```
+```json
+{"action": "run_planner", "description": "<one-sentence goal for the planner>"}
+```
+```json
+{"action": "refuse", "refusal_reason": "<why>"}
+```
+"""
+
 
 def agent_turn(ax: AxiomContext, input: SessionEnvelope) -> SessionEnvelope:
     """One bounded conversational/planning step. Decides the next move —
@@ -34,7 +58,9 @@ def agent_turn(ax: AxiomContext, input: SessionEnvelope) -> SessionEnvelope:
             ws.write("flow.yaml", input.current_flow_yaml)
 
     state = _state_dict(input)
-    result = rt.run_agent("chat", state, anthropic, workspace=ws, progress=_progress(ax))
+    result = rt.run_agent(
+        "chat", state, anthropic, workspace=ws, progress=_progress(ax), system_prompt=CHAT_PROMPT
+    )
     decision = result.decision or {}
 
     out = SessionEnvelope()
