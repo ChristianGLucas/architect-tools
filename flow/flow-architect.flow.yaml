@@ -13,7 +13,7 @@
 #   build ─[gave_up]→ finalize;  on_error(build|review) → err_shape → finalize
 
 name: christiangeorgelucas/flow-architect
-version: 0.2.0
+version: 0.2.1
 description: >-
   AI flow author. Give it a request (and optionally your current draft canvas)
   and it plans, builds, live-tests and saves an Axiom flow composed from
@@ -76,25 +76,25 @@ run_config:
 
 nodes:
   - alias: build
-    package: christiangeorgelucas/architect-tools@0.2.0
+    package: christiangeorgelucas/architect-tools@0.2.1
     node: BuildStep
     config:
       retry: { max_attempts: 2, initial_interval_ms: 1000, backoff_coefficient: 2.0 }
 
   - alias: review
-    package: christiangeorgelucas/architect-tools@0.2.0
+    package: christiangeorgelucas/architect-tools@0.2.1
     node: ReviewStep
     config:
       retry: { max_attempts: 2, initial_interval_ms: 1000, backoff_coefficient: 2.0 }
 
   - alias: err_shape
-    package: christiangeorgelucas/architect-tools@0.2.0
+    package: christiangeorgelucas/architect-tools@0.2.1
     node: ErrShape
     config:
       join: { kind: XOR }
 
   - alias: finalize
-    package: christiangeorgelucas/architect-tools@0.2.0
+    package: christiangeorgelucas/architect-tools@0.2.1
     node: FinalizeResult
     config:
       join: { kind: XOR }
