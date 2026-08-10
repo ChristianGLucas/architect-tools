@@ -87,7 +87,7 @@ nodes:
     node: Carrier
 
   - alias: planner_sub
-    subflow: 01KZMNJ1ZDQ62KRYQTGVGS8NR7   # christiangeorgelucas/flow-planner-fanout@0.5.0 (PlannerReport facade)
+    subflow: 01KZMNJ1ZDQ62KRYQTGVGS8NR7   # christiangeorgelucas/flow-planner-fanout@0.6.0 non-mutating (PlannerReport facade)
     input: FlowPlannerFanoutInput
     output: PlannerReport
 
