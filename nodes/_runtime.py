@@ -188,6 +188,15 @@ def _scenario_happy(kind: str, state: dict, progress: Optional[ProgressCb]) -> A
     return AgentResult(text="", decision={"action": "reply"})
 
 
+def _scenario_claims_built_no_file(kind: str, state: dict, progress: Optional[ProgressCb]) -> AgentResult:
+    # Reproduces a live incident: a build turn reasoned itself into believing
+    # it was finished and emitted {"done": true, "status": "built"} without
+    # ever writing flow.yaml. build_step must not trust this claim.
+    if kind == "build":
+        return AgentResult(text="Done.", decision={"done": True, "status": "built"}, files={})
+    return AgentResult(text="", decision={"action": "reply"})
+
+
 def _scenario_refuse(kind: str, state: dict, progress: Optional[ProgressCb]) -> AgentResult:
     if kind == "chat":
         turn = int(state.get("turn_count", 0))
@@ -219,6 +228,7 @@ edges: []
 _SCENARIOS: dict[str, Callable[[str, dict, Optional[ProgressCb]], AgentResult]] = {
     "happy": _scenario_happy,
     "refuse": _scenario_refuse,
+    "claims_built_no_file": _scenario_claims_built_no_file,
     "default": _scenario_happy,
 }
 

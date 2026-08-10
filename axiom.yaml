@@ -1,5 +1,5 @@
 name: christiangeorgelucas/architect-tools
-version: 0.1.4
+version: 0.1.5
 language: python
 description: >-
   Flow Architect node package — the agentic backend of the in-editor AI flow

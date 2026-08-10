@@ -85,11 +85,26 @@ def build_step(ax: AxiomContext, input: BuildState) -> BuildState:
     out.progress_note = result.text[:500]
 
     if decision.get("done"):
-        out.done = True
-        out.status = decision.get("status", "built")
-        if decision.get("gap"):
-            out.status = "gave_up"
-            out.gap_json = rt.dumps(decision.get("gap"))
+        claimed_built = decision.get("status", "built") == "built" and not decision.get("gap")
+        if claimed_built and not out.flow_yaml.strip():
+            # Don't trust an unverified "done" claim. Found live: a build turn
+            # reasoned about the task, decided it was finished, and emitted
+            # {"done": true, "status": "built"} without ever writing a
+            # flow.yaml — verify_flow's own validate step correctly caught the
+            # empty file, but the flow's verify->finalize edge routed it to
+            # "Flow built and verified." anyway (fixed separately in the flow
+            # graph). Keep looping — bounded by the self-loop's
+            # max_iterations — so the agent gets a real further chance instead
+            # of a claim with no evidence ever reaching verify at all.
+            out.progress_note = (
+                "(claimed done/built but produced no flow.yaml — retrying) " + out.progress_note
+            )[:500]
+        else:
+            out.done = True
+            out.status = decision.get("status", "built")
+            if decision.get("gap"):
+                out.status = "gave_up"
+                out.gap_json = rt.dumps(decision.get("gap"))
     ax.log.info("build step", cursor=int(out.step_cursor), done=bool(out.done), status=out.status)
     return out
 

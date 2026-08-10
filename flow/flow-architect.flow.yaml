@@ -73,17 +73,17 @@ run_config:
 
 nodes:
   - alias: init
-    package: christiangeorgelucas/architect-tools@0.1.3
+    package: christiangeorgelucas/architect-tools@0.1.5
     node: InitSession
 
   - alias: agent_turn
-    package: christiangeorgelucas/architect-tools@0.1.3
+    package: christiangeorgelucas/architect-tools@0.1.5
     node: AgentTurn
     config:
       retry: { max_attempts: 2, initial_interval_ms: 1000, backoff_coefficient: 2.0 }
 
   - alias: carrier
-    package: christiangeorgelucas/architect-tools@0.1.3
+    package: christiangeorgelucas/architect-tools@0.1.5
     node: Carrier
 
   - alias: planner_sub
@@ -92,7 +92,7 @@ nodes:
     output: PlannerReport
 
   - alias: plan_post
-    package: christiangeorgelucas/architect-tools@0.1.3
+    package: christiangeorgelucas/architect-tools@0.1.5
     node: PostprocessPlan
     config:
       join: { kind: AND, failure_policy: TOLERATE_FAILURES }
@@ -112,7 +112,7 @@ nodes:
           plan_json:           { cel: 'toJson(inputs.planner_sub)' }
 
   - alias: await_user
-    package: christiangeorgelucas/architect-tools@0.1.3
+    package: christiangeorgelucas/architect-tools@0.1.5
     node: AwaitUser
     config:
       hitl:
@@ -122,29 +122,29 @@ nodes:
         timeout_policy: CANCEL
 
   - alias: rejoin
-    package: christiangeorgelucas/architect-tools@0.1.3
+    package: christiangeorgelucas/architect-tools@0.1.5
     node: Rejoin
     config:
       join: { kind: XOR }
 
   - alias: builder
-    package: christiangeorgelucas/architect-tools@0.1.3
+    package: christiangeorgelucas/architect-tools@0.1.5
     node: BuildStep
     config:
       retry: { max_attempts: 2, initial_interval_ms: 1000, backoff_coefficient: 2.0 }
 
   - alias: verify
-    package: christiangeorgelucas/architect-tools@0.1.3
+    package: christiangeorgelucas/architect-tools@0.1.5
     node: VerifyFlow
 
   - alias: err_shape
-    package: christiangeorgelucas/architect-tools@0.1.3
+    package: christiangeorgelucas/architect-tools@0.1.5
     node: ErrShape
     config:
       join: { kind: XOR }
 
   - alias: finalize
-    package: christiangeorgelucas/architect-tools@0.1.3
+    package: christiangeorgelucas/architect-tools@0.1.5
     node: FinalizeResult
     config:
       join: { kind: XOR }
@@ -234,10 +234,21 @@ edges:
     condition: { op: CEL, cel: 'done && status == "gave_up"' }
     adapter: { status: "'refused'", summary: "'Could not build from published components.'", missing_capabilities_json: gap_json }
 
-  # Verify → result.
+  # Verify → result. verify_flow never raises on a failing check (validate/
+  # compile/assemble each return a structured ok=false + error instead of an
+  # exception, so the report carries the real command output) — so this MUST
+  # branch on `ok`, not assume success unconditionally. An unconditional edge
+  # here previously reported "Flow built and verified." on a build the builder
+  # claimed done+built but never actually wrote (found live: verify's own
+  # report said "flow.yaml: file is empty" while finalize still said "done").
   - from: verify
     to: finalize
+    condition: { op: CEL, cel: 'ok' }
     adapter: { status: "'done'", summary: "'Flow built and verified.'", updated_graph_json: updated_graph_json, flow_yaml: flow_yaml, verify_report_json: report_json }
+  - from: verify
+    to: finalize
+    condition: { op: CEL, cel: '!ok' }
+    adapter: { status: "'failed'", summary: "'The build did not pass verification.'", error: error, verify_report_json: report_json }
 
   # Error funnel (on_error edges converge on err_shape → finalize).
   - { from: agent_turn, to: err_shape, on_error: true, adapter: { reason: message } }
