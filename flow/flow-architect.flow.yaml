@@ -1,42 +1,45 @@
-# Flow Architect — the in-editor AI flow author, as an Axiom flow.
+# Flow Architect — AI flow author, as an Axiom flow.
 #
-# ONE durable unary execution per chat session:
-#   init → agent_turn ⇄ await_user(HITL) / planner  →  builder(self-loop) →
-#   verify → finalize.
-# The browser is the sole draft writer: the flow receives the serialized canvas
-# (client_graph_json) and returns updated_graph_json; it never writes /app/graphs.
-# Compose-only + honest refusal: a real capability gap ends the run as "refused".
+# Redesign (founder directive 2026-08-10): a BUILD ↔ REVIEW agent pair, not a
+# chat-turn state machine. The build node is Claude Code with the axiom CLI +
+# flow-authoring skill (it plans via the published planner flow, searches the
+# marketplace, authors, live-tests, saves); the review node is an INDEPENDENT
+# second agent that re-verifies from scratch. The flow graph provides only
+# what agents can't: durability, chunking under the per-call ceiling, the
+# builder≠reviewer boundary, and typed error routing.
 #
-# STATUS: authored (local `axiom flow validate` clean). Cannot compile until
-# christiangeorgelucas/architect-tools is published AND the ADR-181/182 + pauses
-# platform changes are live on axiom-dev — compile/run/verify happen after deploy.
+#   @flow_input → build ⟲ (bounded rounds) → review → finalize → @flow_output
+#                    ▲______________________|  (rejected, bounded)
+#   build ─[gave_up]→ finalize;  on_error(build|review) → err_shape → finalize
 
 name: christiangeorgelucas/flow-architect
-version: 0.1.0
+version: 0.2.0
 description: >-
-  In-editor AI flow author. Chat to plan a flow from published marketplace
-  components, approve, and it builds + verifies it — streaming progress back.
-  Compose-only: refuses honestly when the marketplace lacks the needed nodes.
+  AI flow author. Give it a request (and optionally your current draft canvas)
+  and it plans, builds, live-tests and saves an Axiom flow composed from
+  published marketplace components — then an independent reviewer agent
+  re-verifies the result before it ships. Compose-only: refuses honestly when
+  the marketplace lacks the needed nodes.
 
 input_facade:
   message_name: ArchitectRequest
-  description: Start (or, via HITL resume, continue) a Flow Architect chat session.
+  description: Start a Flow Architect build session.
   fields:
     graph_id:
       kind: string
       description: The editor draft's GRAPH artifact id; empty for a brand-new flow.
     graph_source_json:
       kind: string
-      description: The serialized canvas (SourceGraph JSON) the agent plans against.
+      description: The serialized canvas (SourceGraph JSON) to modify; empty for a brand-new flow.
     user_message:
       kind: string
-      description: The user's chat message.
+      description: The user's request — what the flow should do.
     model:
       kind: string
       description: Optional Anthropic model override.
   example_input:
     graph_id: ""
-    graph_source_json: "{\"nodes\":[],\"edges\":[]}"
+    graph_source_json: ""
     user_message: "Turn an RSS feed into a daily digest email"
     model: ""
 
@@ -61,7 +64,7 @@ output_facade:
       description: Gap detail (status refused).
     verify_report_json:
       kind: string
-      description: The verifier's report (status done).
+      description: The independent reviewer's report (status done).
     error:
       kind: string
       description: Failure description (status failed).
@@ -72,188 +75,97 @@ run_config:
     - AXIOM_API_KEY
 
 nodes:
-  - alias: init
-    package: christiangeorgelucas/architect-tools@0.1.6
-    node: InitSession
-
-  - alias: agent_turn
-    package: christiangeorgelucas/architect-tools@0.1.6
-    node: AgentTurn
-    config:
-      retry: { max_attempts: 2, initial_interval_ms: 1000, backoff_coefficient: 2.0 }
-
-  - alias: carrier
-    package: christiangeorgelucas/architect-tools@0.1.6
-    node: Carrier
-
-  - alias: planner_sub
-    subflow: 01KZMNJ1ZDQ62KRYQTGVGS8NR7   # christiangeorgelucas/flow-planner-fanout@0.6.0 non-mutating (PlannerReport facade)
-    input: FlowPlannerFanoutInput
-    output: PlannerReport
-
-  - alias: plan_post
-    package: christiangeorgelucas/architect-tools@0.1.6
-    node: PostprocessPlan
-    config:
-      join: { kind: AND, failure_policy: TOLERATE_FAILURES }
-      compose:
-        compose_plan:
-          # session state from the carrier edge (field picks)…
-          phase:               { src_edge: carrier, src_path: phase }
-          user_message:        { src_edge: carrier, src_path: user_message }
-          conversation_json:   { src_edge: carrier, src_path: conversation_json }
-          draft_graph_id:      { src_edge: carrier, src_path: draft_graph_id }
-          current_flow_yaml:   { src_edge: carrier, src_path: current_flow_yaml }
-          client_graph_json:   { src_edge: carrier, src_path: client_graph_json }
-          turn_count:          { src_edge: carrier, src_path: turn_count }
-          model:               { src_edge: carrier, src_path: model }
-          # …and the whole PlanResult from the planner edge (serialized to the
-          # plan_json field; the compose cel: site is preview-gated before trust).
-          plan_json:           { cel: 'toJson(inputs.planner_sub)' }
-
-  - alias: await_user
-    package: christiangeorgelucas/architect-tools@0.1.6
-    node: AwaitUser
-    config:
-      hitl:
-        interrupt_payload_template: "value"          # the whole envelope is the pause payload
-        resume_input_schema: SessionEnvelope         # resume value BECOMES this node's input
-        timeout_ms: 86400000                         # 24h idle → cancel (≪ 30d checkpoint TTL)
-        timeout_policy: CANCEL
-
-  - alias: rejoin
-    package: christiangeorgelucas/architect-tools@0.1.6
-    node: Rejoin
-    config:
-      join: { kind: XOR }
-
-  - alias: builder
-    package: christiangeorgelucas/architect-tools@0.1.6
+  - alias: build
+    package: christiangeorgelucas/architect-tools@0.2.0
     node: BuildStep
     config:
       retry: { max_attempts: 2, initial_interval_ms: 1000, backoff_coefficient: 2.0 }
 
-  - alias: verify
-    package: christiangeorgelucas/architect-tools@0.1.6
-    node: VerifyFlow
+  - alias: review
+    package: christiangeorgelucas/architect-tools@0.2.0
+    node: ReviewStep
+    config:
+      retry: { max_attempts: 2, initial_interval_ms: 1000, backoff_coefficient: 2.0 }
 
   - alias: err_shape
-    package: christiangeorgelucas/architect-tools@0.1.6
+    package: christiangeorgelucas/architect-tools@0.2.0
     node: ErrShape
     config:
       join: { kind: XOR }
 
   - alias: finalize
-    package: christiangeorgelucas/architect-tools@0.1.6
+    package: christiangeorgelucas/architect-tools@0.2.0
     node: FinalizeResult
     config:
       join: { kind: XOR }
 
 edges:
   # Entry.
-  - { from: "@flow_input", to: init, adapter: { draft_graph_id: graph_id, client_graph_json: graph_source_json, user_message: user_message, model: model } }
-  - { from: init, to: agent_turn }
+  - { from: "@flow_input", to: build, adapter: { user_request: user_message, client_graph_json: graph_source_json, draft_graph_id: graph_id, model: model } }
 
-  # Chat-loop dispatch out of a turn. A plain reply and a post-plan review both
-  # converge on `rejoin` (the XOR join); a planner request detours through the
-  # carrier-funnel first; a refusal exits the loop.
-  - from: agent_turn
-    to: rejoin
-    condition: { op: CEL, cel: 'refusal_reason == "" && planner_description == ""' }
-  - from: agent_turn
-    to: carrier
-    condition: { op: CEL, cel: 'planner_description != ""' }
-  - from: agent_turn
-    to: finalize
-    condition: { op: CEL, cel: 'refusal_reason != ""' }
-    adapter: { status: "'refused'", summary: refusal_reason, missing_capabilities_json: missing_capabilities_json }
-
-  # Planner fan-out around the subflow (carrier-funnel).
-  - { from: carrier, to: planner_sub, adapter: { description: planner_description, model: model } }
-  - { from: carrier, to: plan_post }
-  - { from: planner_sub, to: plan_post }
-
-  # plan_post's reviewed envelope also lands on the XOR join.
-  - { from: plan_post, to: rejoin }
-
-  # rejoin (XOR join over the reply / plan-review arms) → the HITL pause.
-  - { from: rejoin, to: await_user }
-
-  # HITL turn resolution. The loop back-edge originates here (await_user is on
-  # the cycle and has forward exits, so nothing is a pure back-edge sink).
-  - from: await_user
-    to: agent_turn
+  # Build self-loop: bounded rounds under the per-call ceiling. The node
+  # bounds itself (MAX_BUILD_ROUNDS → honest gave_up); max_iterations is the
+  # platform backstop. Explicit adapter: back-edges bypass the mapping gate.
+  - from: build
+    to: build
     loop: true
-    max_iterations: 40
-    condition: { op: CEL, cel: 'user_action == "message" || (user_action == "approve" && !plan_ready)' }
-    adapter:
-      phase: phase
-      user_action: user_action
-      user_message: user_message
-      assistant_message: assistant_message
-      conversation_json: conversation_json
-      draft_graph_id: draft_graph_id
-      current_flow_yaml: current_flow_yaml
-      client_graph_json: client_graph_json
-      plan_json: plan_json
-      plan_ready: plan_ready
-      skeleton_yaml: skeleton_yaml
-      missing_capabilities_json: missing_capabilities_json
-      turn_count: turn_count
-      model: model
-  - from: await_user
-    to: builder
-    condition: { op: CEL, cel: 'user_action == "approve" && plan_ready' }
-    adapter: { flow_yaml: current_flow_yaml, verified_plan_json: plan_json, skeleton_yaml: skeleton_yaml, draft_graph_id: draft_graph_id, conversation_json: conversation_json, client_graph_json: client_graph_json, model: model }
-  - from: await_user
-    to: finalize
-    condition: { op: CEL, cel: 'user_action == "cancel"' }
-    adapter: { status: "'cancelled'", summary: "'Session cancelled.'" }
-
-  # Builder self-loop (bounded chunks) + forward exits.
-  - from: builder
-    to: builder
-    loop: true
-    max_iterations: 20
+    max_iterations: 10
     condition: { op: CEL, cel: '!done' }
     adapter:
-      flow_yaml: flow_yaml
-      verified_plan_json: verified_plan_json
-      skeleton_yaml: skeleton_yaml
-      draft_graph_id: draft_graph_id
-      work_log_json: work_log_json
-      step_cursor: step_cursor
-      conversation_json: conversation_json
+      user_request: user_request
       client_graph_json: client_graph_json
+      draft_graph_id: draft_graph_id
       model: model
-  - from: builder
-    to: verify
+      flow_yaml: flow_yaml
+      graph_id: graph_id
+      artifact_id: artifact_id
+      test_evidence_json: test_evidence_json
+      work_log_json: work_log_json
+      review_feedback_json: review_feedback_json
+      round: round
+      review_rounds: review_rounds
+
+  # Build claims done+built → independent review (same message type; bare edge).
+  - from: build
+    to: review
     condition: { op: CEL, cel: 'done && status == "built"' }
-  - from: builder
+
+  # Build gave up honestly (capability gap or budget) → refusal.
+  - from: build
     to: finalize
     condition: { op: CEL, cel: 'done && status == "gave_up"' }
-    adapter: { status: "'refused'", summary: "'Could not build from published components.'", missing_capabilities_json: gap_json }
+    adapter: { status: "'refused'", summary: "'Could not build this from published marketplace components.'", missing_capabilities_json: gap_json, error: error, flow_yaml: flow_yaml }
 
-  # Verify → result. verify_flow never raises on a failing check (validate/
-  # compile/assemble each return a structured ok=false + error instead of an
-  # exception, so the report carries the real command output) — so this must
-  # NOT hardcode status='done'. finalize_result already classifies an unset
-  # status by whether updated_graph_json is present ("an unset status with a
-  # real graph is a success; otherwise a failure") — exactly the ok/!ok split,
-  # for free, without two edges into the same (source, destination) pair
-  # (which the platform rejects: "The executor cannot tell them apart"). A
-  # hardcoded 'done' here previously reported "Flow built and verified." on a
-  # build the builder claimed done+built but never actually wrote (found
-  # live: verify's own report said "flow.yaml: file is empty").
-  - from: verify
+  # Review rejected → back into the build loop with structured findings.
+  - from: review
+    to: build
+    loop: true
+    max_iterations: 4
+    condition: { op: CEL, cel: '!final' }
+    adapter:
+      user_request: user_request
+      client_graph_json: client_graph_json
+      draft_graph_id: draft_graph_id
+      model: model
+      flow_yaml: flow_yaml
+      graph_id: graph_id
+      artifact_id: artifact_id
+      test_evidence_json: test_evidence_json
+      work_log_json: work_log_json
+      review_feedback_json: findings_json
+      round: round
+      review_rounds: review_rounds
+
+  # Review final verdict (approved, or reject budget exhausted) → terminal.
+  - from: review
     to: finalize
-    adapter: { updated_graph_json: updated_graph_json, flow_yaml: flow_yaml, verify_report_json: report_json, error: error }
+    condition: { op: CEL, cel: 'final' }
+    adapter: { status: status, summary: summary, updated_graph_json: updated_graph_json, flow_yaml: flow_yaml, verify_report_json: report_json, error: error }
 
-  # Error funnel (on_error edges converge on err_shape → finalize).
-  - { from: agent_turn, to: err_shape, on_error: true, adapter: { reason: message } }
-  - { from: planner_sub, to: err_shape, on_error: true, adapter: { reason: message } }
-  - { from: builder, to: err_shape, on_error: true, adapter: { reason: message } }
-  - { from: verify, to: err_shape, on_error: true, adapter: { reason: message } }
+  # Error funnel. err_shape stays separate from finalize because a (from,to)
+  # pair cannot carry both a normal and an on_error edge.
+  - { from: build, to: err_shape, on_error: true, adapter: { reason: message } }
+  - { from: review, to: err_shape, on_error: true, adapter: { reason: message } }
   - { from: err_shape, to: finalize }
 
   # Terminal.

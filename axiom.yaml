@@ -1,12 +1,14 @@
 name: christiangeorgelucas/architect-tools
-version: 0.1.6
+version: 0.2.0
 language: python
 description: >-
-  Flow Architect node package — the agentic backend of the in-editor AI flow
-  author. Runs Claude Code (via the Anthropic Agent SDK) with the axiom CLI and
-  the flow-authoring skill to plan, build, and verify Axiom flows from published
-  marketplace components, one durable HITL chat session at a time. Compose-only:
-  refuses honestly when the marketplace lacks the needed nodes.
+  Flow Architect node package — the agentic backend of the AI flow author.
+  A build↔review agent pair: the build node runs Claude Code (via the
+  Anthropic Agent SDK) with the axiom CLI and the flow-authoring skill to
+  plan, build, and live-test an Axiom flow from published marketplace
+  components; the review node is an independent second agent that re-verifies
+  the result from scratch before it ships. Compose-only: refuses honestly
+  when the marketplace lacks the needed nodes.
 
 build:
   # Python is the only language whose system_deps reach the RUNTIME image;
@@ -22,59 +24,21 @@ build:
   timeout: "28m"
 
 nodes:
-  - name: InitSession
-    description: Seed a chat session; log in and warm the authoring skill.
-    input: SessionEnvelope
-    output: SessionEnvelope
-    required_secrets:
-      - AXIOM_API_KEY
-      - ANTHROPIC_API_KEY
-
-  - name: AgentTurn
-    description: One conversational/planning step; decides reply, run_planner, or honest refusal.
-    input: SessionEnvelope
-    output: SessionEnvelope
-    required_secrets:
-      - ANTHROPIC_API_KEY
-      - AXIOM_API_KEY
-
-  - name: AwaitUser
-    description: HITL pause point; echoes the resumed envelope.
-    input: SessionEnvelope
-    output: SessionEnvelope
-
-  - name: Rejoin
-    description: Chat-loop head funnel (XOR join in flow config); echo.
-    input: SessionEnvelope
-    output: SessionEnvelope
-
-  - name: Carrier
-    description: Carrier-funnel echo routing session state around the planner subflow.
-    input: SessionEnvelope
-    output: SessionEnvelope
-
-  - name: PostprocessPlan
-    description: Filter the planner's false gaps and mark the session plan-ready (no LLM).
-    input: SessionEnvelope
-    output: SessionEnvelope
-    required_secrets:
-      - AXIOM_API_KEY
-
   - name: BuildStep
-    description: One bounded compose-only build chunk (self-loop) via Claude Code + the axiom CLI.
+    description: One bounded build round (self-loop) — Claude Code + the axiom CLI plans, builds, live-tests and saves the flow.
     input: BuildState
     output: BuildState
     required_secrets:
       - ANTHROPIC_API_KEY
       - AXIOM_API_KEY
 
-  - name: VerifyFlow
-    description: Deterministic validate to compile to assemble; emits the SourceGraph the editor applies.
+  - name: ReviewStep
+    description: Independent reviewer agent — re-runs the oracle from scratch; approves (assembled graph) or rejects with findings.
     input: BuildState
-    output: VerifyResult
+    output: ReviewVerdict
     required_secrets:
-      - AXIOM_API_KEY
       - ANTHROPIC_API_KEY
+      - AXIOM_API_KEY
 
   - name: FinalizeResult
     description: Shape the closed-enum terminal ArchitectResult.

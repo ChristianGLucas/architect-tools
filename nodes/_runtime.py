@@ -155,37 +155,90 @@ def _emit(progress: Optional[ProgressCb], kind: str, data: dict) -> None:
             pass
 
 
-# ── Canned scenarios. `kind` is "chat" | "plan" | "build". Keep these small and
+# ── Canned scenarios. `kind` is "build" | "review". Keep these small and
 # deterministic — they exist to exercise the flow's topology + the nodes'
 # parse/harvest, not to be smart.
 
 
 def _scenario_happy(kind: str, state: dict, progress: Optional[ProgressCb]) -> AgentResult:
-    if kind == "chat":
-        turn = int(state.get("turn_count", 0))
-        if turn == 0:
-            _emit(progress, "text_delta", {"text": "Planning a flow for: "})
-            _emit(progress, "text_delta", {"text": state.get("user_message", "")})
-            return AgentResult(
-                text="I'll plan that now.",
-                decision={"action": "run_planner", "description": state.get("user_message", "build a flow")},
-            )
-        # After the plan came back, present it and wait for approval.
-        return AgentResult(
-            text="Here's the plan. Approve to build.",
-            decision={"action": "reply", "plan_ready": True},
-        )
     if kind == "build":
-        _emit(progress, "step_started", {"step": "assemble"})
-        # One-shot build: emit a trivial but valid single-node flow.yaml.
-        flow_yaml = state.get("skeleton_yaml") or _MINIMAL_FLOW_YAML
-        _emit(progress, "step_completed", {"step": "assemble"})
+        _emit(progress, "step_started", {"step": "build"})
+        _emit(progress, "step_completed", {"step": "build"})
         return AgentResult(
-            text="Built the flow.",
-            decision={"done": True, "status": "built"},
-            files={"flow.yaml": flow_yaml},
+            text="Built, tested and saved the flow.",
+            decision={
+                "done": True,
+                "status": "built",
+                "graph_id": "G-scripted",
+                "artifact_id": "A-scripted",
+            },
+            files={
+                "flow.yaml": _MINIMAL_FLOW_YAML,
+                "evidence.json": '{"runs":[{"input":"hi","ok":true}]}',
+            },
         )
-    return AgentResult(text="", decision={"action": "reply"})
+    if kind == "review":
+        return AgentResult(
+            text="Independently re-ran the oracle; zero critical findings.",
+            decision={"approved": True, "summary": "Matches the request and runs clean."},
+            files={"graph.json": '{"nodes":[{"id":"echo"}],"edges":[]}'},
+        )
+    return AgentResult(text="", decision={})
+
+
+def _scenario_reject_then_approve(kind: str, state: dict, progress: Optional[ProgressCb]) -> AgentResult:
+    # Exercises the review→build feedback loop: first review rejects with a
+    # CRITICAL finding, the re-entered build round fixes it, second review
+    # approves. Also asserts the feedback actually reached the build state.
+    if kind == "build":
+        fixed = bool(state.get("review_feedback_json"))
+        return AgentResult(
+            text="Fixed per review feedback." if fixed else "First build attempt.",
+            decision={
+                "done": True,
+                "status": "built",
+                "graph_id": "G-fixed" if fixed else "G-draft",
+                "artifact_id": "A-fixed" if fixed else "A-draft",
+            },
+            files={"flow.yaml": _MINIMAL_FLOW_YAML},
+        )
+    if kind == "review":
+        if int(state.get("review_rounds", 0)) <= 1:
+            return AgentResult(
+                text="Found a critical issue.",
+                decision={
+                    "approved": False,
+                    "findings": [
+                        {"severity": "critical", "what": "output field is a false-green", "fix_hint": "assert real value"}
+                    ],
+                },
+            )
+        return AgentResult(
+            text="Fix confirmed.",
+            decision={"approved": True, "summary": "Second pass clean."},
+            files={"graph.json": '{"nodes":[],"edges":[]}'},
+        )
+    return AgentResult(text="", decision={})
+
+
+def _scenario_always_reject(kind: str, state: dict, progress: Optional[ProgressCb]) -> AgentResult:
+    # Drives the reject-budget exhaustion path: review never approves, so the
+    # review node must eventually emit final=true / status=failed itself.
+    if kind == "build":
+        return AgentResult(
+            text="Built.",
+            decision={"done": True, "status": "built"},
+            files={"flow.yaml": _MINIMAL_FLOW_YAML},
+        )
+    if kind == "review":
+        return AgentResult(
+            text="Still broken.",
+            decision={
+                "approved": False,
+                "findings": [{"severity": "critical", "what": "does not satisfy the request"}],
+            },
+        )
+    return AgentResult(text="", decision={})
 
 
 def _scenario_claims_built_no_file(kind: str, state: dict, progress: Optional[ProgressCb]) -> AgentResult:
@@ -194,26 +247,20 @@ def _scenario_claims_built_no_file(kind: str, state: dict, progress: Optional[Pr
     # ever writing flow.yaml. build_step must not trust this claim.
     if kind == "build":
         return AgentResult(text="Done.", decision={"done": True, "status": "built"}, files={})
-    return AgentResult(text="", decision={"action": "reply"})
+    return AgentResult(text="", decision={})
 
 
-def _scenario_refuse(kind: str, state: dict, progress: Optional[ProgressCb]) -> AgentResult:
-    if kind == "chat":
-        turn = int(state.get("turn_count", 0))
-        if turn == 0:
-            return AgentResult(
-                text="Let me check the marketplace.",
-                decision={"action": "run_planner", "description": state.get("user_message", "")},
-            )
-        # Planner found the task infeasible → refuse honestly.
+def _scenario_gave_up(kind: str, state: dict, progress: Optional[ProgressCb]) -> AgentResult:
+    if kind == "build":
         return AgentResult(
-            text="I can't build this from published components.",
+            text="The marketplace has no node for this capability.",
             decision={
-                "action": "refuse",
-                "refusal_reason": "no published node covers the requested capability",
+                "done": True,
+                "status": "gave_up",
+                "gap": {"reason": "no published node covers the requested capability"},
             },
         )
-    return AgentResult(text="", decision={"action": "reply"})
+    return AgentResult(text="", decision={})
 
 
 _MINIMAL_FLOW_YAML = """name: christiangeorgelucas/architect-scripted
@@ -227,7 +274,9 @@ edges: []
 
 _SCENARIOS: dict[str, Callable[[str, dict, Optional[ProgressCb]], AgentResult]] = {
     "happy": _scenario_happy,
-    "refuse": _scenario_refuse,
+    "reject_then_approve": _scenario_reject_then_approve,
+    "always_reject": _scenario_always_reject,
+    "gave_up": _scenario_gave_up,
     "claims_built_no_file": _scenario_claims_built_no_file,
     "default": _scenario_happy,
 }
@@ -277,11 +326,12 @@ def _run_real_agent(
     async def _drive() -> AgentResult:
         opts = ClaudeAgentOptions(
             cwd=workspace.root,
-            # A chat turn that consults the marketplace legitimately needs a
-            # handful of tool rounds; 6 was exhausted by a single honest
-            # search-inspect-check loop (found live: the SDK RAISES on
-            # max-turns, killing the whole turn as a business error).
-            max_turns=40 if kind == "build" else 12,
+            # An honest build round (search → inspect → author → validate →
+            # preview → compile → run×3 → save) is many tool rounds; a review
+            # re-runs the oracle from scratch. The SDK RAISES on max-turns
+            # (found live), so keep both generous — the wall-clock guard below
+            # is the real budget.
+            max_turns=50 if kind == "build" else 30,
             allowed_tools=["Read", "Write", "Grep", "Glob", "Bash"],
             env=dict(workspace.env, ANTHROPIC_API_KEY=anthropic_key),
         )
@@ -313,6 +363,9 @@ def _run_real_agent(
             # An unfinished build chunk is not "done" — let the self-loop
             # continue from the harvested state.
             result.decision.setdefault("done", False)
+        if kind == "review":
+            # An unfinished review must not read as an approval.
+            result.decision.setdefault("approved", False)
         result.decision.setdefault("budget_exhausted", True)
         _log_exc = f"{type(exc).__name__}: {exc}"
         print(f"agent turn degraded to partial reply after: {_log_exc}", flush=True)
@@ -361,15 +414,24 @@ def _parse_decision(text: str) -> dict:  # pragma: no cover
             decision = json.loads(candidate.strip())
         except json.JSONDecodeError:
             decision = None
-        if isinstance(decision, dict) and ("action" in decision or "done" in decision):
+        if isinstance(decision, dict) and (
+            "action" in decision or "done" in decision or "approved" in decision
+        ):
             return decision
         idx = text.rfind(DECISION_FENCE, 0, idx)
-    return {"action": "reply"}
+    return {}
+
+
+# Which workspace files each phase's node harvests back into structured state.
+HARVEST_NAMES = {
+    "build": ("flow.yaml", "worklog.md", "evidence.json"),
+    "review": ("graph.json", "review.json"),
+}
 
 
 def _harvest_files(workspace: Workspace, kind: str) -> dict:  # pragma: no cover
     out = {}
-    for name in ("flow.yaml", "plan.json", "worklog.md"):
+    for name in HARVEST_NAMES.get(kind, ()):
         content = workspace.read(name)
         if not content:
             content = _find_nested(workspace.root, name)

@@ -31,8 +31,15 @@ def test_narrated_cli_json_before_decision_does_not_shadow_it():
     assert _parse_decision(text) == {"done": False}
 
 
-def test_no_decision_block_defaults_to_reply():
-    assert _parse_decision("just some prose, no decision block") == {"action": "reply"}
+def test_no_decision_block_yields_empty_decision():
+    # No fabricated default: an absent decision must be visibly absent so the
+    # build node keeps looping and the review node fails closed (no approval).
+    assert _parse_decision("just some prose, no decision block") == {}
+
+
+def test_review_approval_decision_is_recognized():
+    text = 'Verified.\n```axiom-decision\n{"approved": true, "summary": "clean"}\n```'
+    assert _parse_decision(text) == {"approved": True, "summary": "clean"}
 
 
 def test_malformed_decision_block_falls_back_to_earlier_valid_one():

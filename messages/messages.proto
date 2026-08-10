@@ -1,121 +1,102 @@
 // Data contracts for christiangeorgelucas/architect-tools — the node package
-// behind the Flow Architect flow (in-editor AI flow authoring).
+// behind the Flow Architect flow (AI flow authoring).
 //
-// Design (approved plan 2026-08-08): ONE durable unary flow execution per chat
-// session. SessionEnvelope is BOTH the chat-loop state carrier and the HITL
-// resume schema — the platform contract is that a resume value BECOMES the
-// paused node's input, so the paused node's input message must carry the whole
-// session (context for the user + the fields they fill). The client treats the
-// envelope as opaque: echo it back verbatim, set user_action/user_message
-// (+ refresh client_graph_json). All *_json fields are JSON-serialized blobs —
-// the platform types the envelope, the agent owns the payload shapes; every
-// field rides node outputs because /tmp is per-pod and nothing else persists
-// across loop iterations.
+// Design (founder redesign 2026-08-10): the flow is a BUILD ↔ REVIEW agent
+// pair, not a chat-turn state machine. BuildState is the single working-state
+// carrier: it enters from the flow input, rides the build node's bounded
+// self-loop (each iteration one wall-clock-guarded agent chunk), and crosses
+// to the review node when the build claims done. ReviewVerdict routes either
+// back to build (rejected, with findings) or out to the terminal result.
+// All *_json fields are JSON-serialized blobs — the platform types the
+// envelope, the agent owns the payload shapes; every field rides node outputs
+// because /tmp is per-pod and nothing else persists across loop iterations.
 
 syntax = "proto3";
 
 package christiangeorgelucas.architect_tools;
 
-// SessionEnvelope rides the chat loop (init → agent_turn ⇄ await_user/planner)
-// and is the HITL resume schema of the await_user node. Clients: echo it back
-// verbatim on resume, filling user_action, user_message and (optionally) a
-// refreshed client_graph_json — everything else is the agent's state.
-message SessionEnvelope {
-  // phase is "chat" or "plan_review" — which kind of turn the user is answering.
-  string phase = 1;
-  // user_action is client-filled on resume: "message", "approve" or "cancel".
-  string user_action = 2;
-  // user_message is the user's chat text (with user_action "message").
-  string user_message = 3;
-  // assistant_message is what the client renders for this turn.
-  string assistant_message = 4;
-  // conversation_json is the agent-compacted history (rolling summary + recent turns).
-  string conversation_json = 5;
-  // draft_graph_id is the editor GRAPH artifact id; "" for a brand-new flow.
-  string draft_graph_id = 6;
-  // current_flow_yaml is the agent's working flow.yaml for the draft.
-  string current_flow_yaml = 7;
-  // client_graph_json is the serialized canvas (SourceGraph JSON) as of the
-  // latest turn — refreshed by the client on every resume.
-  string client_graph_json = 8;
-  // plan_json is the verified plan (post filtering); "" until a planner round ran.
-  string plan_json = 9;
-  // plan_ready is true only after a planner round found the task feasible.
-  bool plan_ready = 10;
-  // skeleton_yaml is the planner's draft flow.yaml skeleton.
-  string skeleton_yaml = 11;
-  // missing_capabilities_json is the honest-refusal detail: an array of
-  // {requested_step, planner_score, why_unmatched, nearest_matches[]}.
-  string missing_capabilities_json = 12;
-  // turn_count counts chat-loop iterations (budget guard).
-  int64 turn_count = 13;
-  // model optionally overrides the Anthropic model.
-  string model = 14;
-  // planner_description is the task sentence the agent hands the planner subflow.
-  string planner_description = 15;
-  // refusal_reason is set when the agent takes the refuse edge.
-  string refusal_reason = 16;
-}
-
-// PlannerCall is the planner subflow's facade input projected out of the
-// envelope by the carrier node (the carrier-funnel pattern).
-message PlannerCall {
-  // description is the one-line task the planner plans against the marketplace.
-  string description = 1;
-  // model optionally overrides the planner's judge model.
-  string model = 2;
-}
-
-// BuildState rides the builder self-loop. Each iteration is one bounded agent
-// chunk (wall-clock guarded well under the 660 s sidecar call ceiling); the
-// /tmp workspace is re-materialized from these fields every iteration.
+// BuildState rides @flow_input → build → (self-loop) → review, and back from
+// a rejecting review. The /tmp workspace is re-materialized from these fields
+// every iteration.
 message BuildState {
-  // flow_yaml is the working flow.yaml being built/edited.
-  string flow_yaml = 1;
-  // verified_plan_json is the plan the build must follow (compose-only rule).
-  string verified_plan_json = 2;
-  // skeleton_yaml is the planner's starting skeleton.
-  string skeleton_yaml = 3;
-  // draft_graph_id is carried through for the final result.
-  string draft_graph_id = 4;
-  // work_log_json is the agent's own progress ledger (steps done / remaining).
-  string work_log_json = 5;
-  // step_cursor advances per chunk; also the loop's implicit ordering witness.
-  int64 step_cursor = 6;
-  // done is the self-loop exit signal.
-  bool done = 7;
-  // status is "" while looping, then "built" or "gave_up".
-  string status = 8;
-  // progress_note is a one-line human-readable status for the progress stream.
-  string progress_note = 9;
-  // error carries a chunk-level failure description.
-  string error = 10;
-  // gap_json is set when the build stopped on a CONFIRMED capability gap —
-  // finalize maps it to an honest refusal with this detail.
-  string gap_json = 11;
-  // conversation_json is carried through so finalize can shape a complete result.
-  string conversation_json = 12;
-  // client_graph_json is the canvas the session started from (conflict info).
-  string client_graph_json = 13;
+  // user_request is the user's ask — the assignment the build agent works to.
+  string user_request = 1;
+  // client_graph_json is the serialized canvas (SourceGraph JSON) of an
+  // existing editor draft to modify; "" for a brand-new flow.
+  string client_graph_json = 2;
+  // draft_graph_id is the editor GRAPH artifact id; "" for a brand-new flow.
+  string draft_graph_id = 3;
   // model optionally overrides the Anthropic model.
-  string model = 14;
+  string model = 4;
+  // flow_yaml is the working flow.yaml being built/edited.
+  string flow_yaml = 5;
+  // graph_id is the saved draft GRAPH artifact id (from `axiom flow save`).
+  string graph_id = 6;
+  // artifact_id is the compiled runnable artifact id (from `axiom flow compile`).
+  string artifact_id = 7;
+  // test_evidence_json is the build agent's own oracle record: the inputs it
+  // ran and the outputs it asserted on. Advisory — review re-verifies.
+  string test_evidence_json = 8;
+  // work_log_json is the agent's own progress ledger (steps done / remaining).
+  string work_log_json = 9;
+  // review_feedback_json carries a rejecting review's findings back into the
+  // next build round; "" on the first pass.
+  string review_feedback_json = 10;
+  // round counts build-node invocations (self-imposed budget guard; the
+  // flow's loop max_iterations is only the backstop).
+  int64 round = 11;
+  // review_rounds counts completed review passes (bounds the reject cycle).
+  int64 review_rounds = 12;
+  // done is the self-loop exit signal.
+  bool done = 13;
+  // status is "" while looping, then "built" or "gave_up".
+  string status = 14;
+  // gap_json is set when the build stopped on a CONFIRMED capability gap —
+  // the terminal path maps it to an honest refusal with this detail.
+  string gap_json = 15;
+  // progress_note is a one-line human-readable status for the progress stream.
+  string progress_note = 16;
+  // error carries a chunk-level failure description.
+  string error = 17;
 }
 
-// VerifyResult is the deterministic verifier's report (validate → compile →
-// preview → mock-run → assemble).
-message VerifyResult {
-  // ok is true only when every check passed and updated_graph_json is present.
-  bool ok = 1;
-  // report_json records every check with its actual output.
-  string report_json = 2;
-  // updated_graph_json is the assembled SourceGraph the editor applies.
-  string updated_graph_json = 3;
-  // flow_yaml is the final flow.yaml the graph was assembled from.
-  string flow_yaml = 4;
-  // error describes the first failing check when ok is false.
-  string error = 5;
-  // conversation_json is carried through to finalize.
-  string conversation_json = 6;
+// ReviewVerdict is the independent reviewer's outcome. final=true routes to
+// the terminal result; final=false loops back to build with findings. The
+// carried_* prefix-free state fields exist because the loop-back edge must
+// reconstruct a BuildState — /tmp does not survive between nodes.
+message ReviewVerdict {
+  // final is true when the session ends here (approved, or reject budget
+  // exhausted); false loops back to build for another round.
+  bool final = 1;
+  // approved is true only when the review found zero CRITICAL findings.
+  bool approved = 2;
+  // status is "done" (approved) or "failed" (reject budget exhausted); ""
+  // while looping back.
+  string status = 3;
+  // summary is the reviewer's human-readable verdict.
+  string summary = 4;
+  // findings_json is the structured findings list (severity, what, fix_hint).
+  string findings_json = 5;
+  // report_json is the reviewer's full re-verification record (its own runs).
+  string report_json = 6;
+  // updated_graph_json is the assembled SourceGraph (approved only).
+  string updated_graph_json = 7;
+  // error describes the failure when status is "failed".
+  string error = 8;
+  // flow_yaml / graph_id / artifact_id / test_evidence_json / work_log_json /
+  // user_request / client_graph_json / draft_graph_id / model / round /
+  // review_rounds carry the session state for the loop-back edge.
+  string flow_yaml = 9;
+  string graph_id = 10;
+  string artifact_id = 11;
+  string test_evidence_json = 12;
+  string work_log_json = 13;
+  string user_request = 14;
+  string client_graph_json = 15;
+  string draft_graph_id = 16;
+  string model = 17;
+  int64 round = 18;
+  int64 review_rounds = 19;
 }
 
 // ErrInfo is the on_error edge funnel: the platform routes a failing node's
@@ -147,6 +128,6 @@ message ArchitectResult {
   string summary = 5;
   // updated_graph_json is the SourceGraph to apply (status "done" only).
   string updated_graph_json = 6;
-  // verify_report_json is the verifier's full report (status "done").
+  // verify_report_json is the reviewer's full report (status "done").
   string verify_report_json = 7;
 }
