@@ -181,7 +181,7 @@ def _scenario_happy(kind: str, state: dict, progress: Optional[ProgressCb]) -> A
         return AgentResult(
             text="Independently re-ran the oracle; zero critical findings.",
             decision={"approved": True, "summary": "Matches the request and runs clean."},
-            files={"graph.json": '{"nodes":[{"id":"echo"}],"edges":[]}'},
+            files={"graph.json": _MINIMAL_GRAPH_JSON},
         )
     return AgentResult(text="", decision={})
 
@@ -216,7 +216,7 @@ def _scenario_reject_then_approve(kind: str, state: dict, progress: Optional[Pro
         return AgentResult(
             text="Fix confirmed.",
             decision={"approved": True, "summary": "Second pass clean."},
-            files={"graph.json": '{"nodes":[],"edges":[]}'},
+            files={"graph.json": _MINIMAL_GRAPH_JSON},
         )
     return AgentResult(text="", decision={})
 
@@ -271,6 +271,35 @@ nodes:
     node: Echo
 edges: []
 """
+
+# What `axiom flow assemble` emits for _MINIMAL_FLOW_YAML — the scripted
+# reviewer must hand the editor a STRUCTURALLY REAL SourceGraph (nodes carry
+# `data` + `position`), because the canvas deserializer throws on anything
+# less and the panel's Apply is the surface under test. The nodeUlid is a
+# fixed placeholder: fixture pushes mint fresh ULIDs per environment, and the
+# editor only renders it (hermetic specs assert topology, not identity).
+_MINIMAL_GRAPH_JSON = """{
+  "name": "christiangeorgelucas/architect-scripted",
+  "version": "0.1.0",
+  "description": "",
+  "nodes": [
+    {
+      "id": "echo",
+      "data": {
+        "nodeUlid": "5YP4VCW5VA0K27R5P6PSCE0KYA",
+        "nodeType": "node",
+        "packageName": "axiom-official/axiom-durable-test",
+        "packageVersion": "0.3.0",
+        "nodeName": "Echo",
+        "inputMessageName": "Message",
+        "outputMessageName": "Message"
+      },
+      "position": {"x": 0, "y": 0}
+    }
+  ],
+  "edges": [],
+  "pipeline_mode": false
+}"""
 
 _SCENARIOS: dict[str, Callable[[str, dict, Optional[ProgressCb]], AgentResult]] = {
     "happy": _scenario_happy,
