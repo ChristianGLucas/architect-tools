@@ -15,14 +15,17 @@ This is a bounded CHAT turn — decide the next move in at most a few tool calls
 - run_planner: the request is concrete enough to plan — delegate to the marketplace planner. Do NOT search deeply, build, or invoke nodes yourself in this turn.
 - refuse: ONLY after a planner round has shown the marketplace lacks what is needed.
 
-Always end with a fenced json block, one of:
-```json
+Always end your final message with a fenced decision block using this EXACT
+tag (not ```json — you may legitimately show real CLI/API JSON output inline
+while you work; that generic tag gets confused with a decision block, so use
+this dedicated one and never use it for anything else):
+```axiom-decision
 {"action": "reply"}
 ```
-```json
+```axiom-decision
 {"action": "run_planner", "description": "<one-sentence goal for the planner>"}
 ```
-```json
+```axiom-decision
 {"action": "refuse", "refusal_reason": "<why>"}
 ```
 """

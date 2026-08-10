@@ -328,19 +328,33 @@ def _compose_prompt(kind: str, state: dict, system_prompt: str) -> str:  # pragm
     return f"{header}\n\n[phase={kind}]\n{json.dumps(state)[:100000]}"
 
 
+DECISION_FENCE = "```axiom-decision"
+
+
 def _parse_decision(text: str) -> dict:  # pragma: no cover
-    # The real agent is instructed to end with a fenced JSON decision block.
-    start = text.rfind("```json")
-    if start == -1:
-        return {"action": "reply"}
-    body = text[start + len("```json"):]
-    end = body.find("```")
-    if end != -1:
-        body = body[:end]
-    try:
-        return json.loads(body.strip())
-    except json.JSONDecodeError:
-        return {"action": "reply"}
+    # The agent is instructed to end its turn with a decision block under this
+    # exact, uniquely-tagged fence — not a generic ```json fence. Both chat and
+    # build turns legitimately narrate real CLI/API JSON output inline (e.g.
+    # `axiom flow assemble --json`) while they work; a generic tag let the LAST
+    # such narrated block shadow the real decision, silently defaulting to
+    # {"action": "reply"} (no "done" key) even after a genuinely finished build
+    # — which left the build self-loop re-running a completed build from
+    # scratch every chunk until it exhausted its iteration budget. Scan
+    # backward through every fenced occurrence (not just the last) and accept
+    # the first one that parses as a dict carrying a recognized decision key.
+    idx = text.rfind(DECISION_FENCE)
+    while idx != -1:
+        body = text[idx + len(DECISION_FENCE):]
+        end = body.find("```")
+        candidate = body[:end] if end != -1 else body
+        try:
+            decision = json.loads(candidate.strip())
+        except json.JSONDecodeError:
+            decision = None
+        if isinstance(decision, dict) and ("action" in decision or "done" in decision):
+            return decision
+        idx = text.rfind(DECISION_FENCE, 0, idx)
+    return {"action": "reply"}
 
 
 def _harvest_files(workspace: Workspace, kind: str) -> dict:  # pragma: no cover
