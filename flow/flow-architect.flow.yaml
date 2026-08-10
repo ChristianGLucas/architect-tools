@@ -236,19 +236,18 @@ edges:
 
   # Verify → result. verify_flow never raises on a failing check (validate/
   # compile/assemble each return a structured ok=false + error instead of an
-  # exception, so the report carries the real command output) — so this MUST
-  # branch on `ok`, not assume success unconditionally. An unconditional edge
-  # here previously reported "Flow built and verified." on a build the builder
-  # claimed done+built but never actually wrote (found live: verify's own
-  # report said "flow.yaml: file is empty" while finalize still said "done").
+  # exception, so the report carries the real command output) — so this must
+  # NOT hardcode status='done'. finalize_result already classifies an unset
+  # status by whether updated_graph_json is present ("an unset status with a
+  # real graph is a success; otherwise a failure") — exactly the ok/!ok split,
+  # for free, without two edges into the same (source, destination) pair
+  # (which the platform rejects: "The executor cannot tell them apart"). A
+  # hardcoded 'done' here previously reported "Flow built and verified." on a
+  # build the builder claimed done+built but never actually wrote (found
+  # live: verify's own report said "flow.yaml: file is empty").
   - from: verify
     to: finalize
-    condition: { op: CEL, cel: 'ok' }
-    adapter: { status: "'done'", summary: "'Flow built and verified.'", updated_graph_json: updated_graph_json, flow_yaml: flow_yaml, verify_report_json: report_json }
-  - from: verify
-    to: finalize
-    condition: { op: CEL, cel: '!ok' }
-    adapter: { status: "'failed'", summary: "'The build did not pass verification.'", error: error, verify_report_json: report_json }
+    adapter: { updated_graph_json: updated_graph_json, flow_yaml: flow_yaml, verify_report_json: report_json, error: error }
 
   # Error funnel (on_error edges converge on err_shape → finalize).
   - { from: agent_turn, to: err_shape, on_error: true, adapter: { reason: message } }
