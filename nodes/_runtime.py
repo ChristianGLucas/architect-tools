@@ -31,6 +31,11 @@ from typing import Any, Callable, Optional
 AXIOM_API_URL = os.environ.get("AXIOM_API_URL", "https://api.axiomide.com/api")
 AXIOM_INGRESS_URL = os.environ.get("AXIOM_INGRESS_URL", "https://api.axiomide.com/invocations")
 
+# Default agent model (0.3.0): Sonnet — near-Opus quality on flow-composition
+# work at a fraction of the cost/latency. Overridable per run via the flow's
+# `model` input (the panel's selector) or the ARCHITECT_MODEL env var.
+DEFAULT_MODEL = os.environ.get("ARCHITECT_MODEL", "claude-sonnet-5")
+
 SENTINEL_PREFIX = "axiom-test-fake:"
 
 
@@ -162,91 +167,40 @@ def _emit(progress: Optional[ProgressCb], kind: str, data: dict) -> None:
 
 def _scenario_happy(kind: str, state: dict, progress: Optional[ProgressCb]) -> AgentResult:
     if kind == "build":
-        _emit(progress, "step_started", {"step": "build"})
-        _emit(progress, "step_completed", {"step": "build"})
+        for step in ("searching the marketplace", "wiring the flow", "compiling", "smoke run", "saving"):
+            _emit(progress, "step_started", {"step": step})
+            _emit(progress, "step_completed", {"step": step})
         return AgentResult(
-            text="Built, tested and saved the flow.",
+            text="STEP: searching the marketplace\nBuilt, smoke-tested and saved the flow.",
             decision={
                 "done": True,
                 "status": "built",
                 "graph_id": "G-scripted",
                 "artifact_id": "A-scripted",
+                "summary": "Echoes the message; smoke run verified.",
             },
             files={
                 "flow.yaml": _MINIMAL_FLOW_YAML,
                 "evidence.json": '{"runs":[{"input":"hi","ok":true}]}',
-            },
-        )
-    if kind == "review":
-        return AgentResult(
-            text="Independently re-ran the oracle; zero critical findings.",
-            decision={"approved": True, "summary": "Matches the request and runs clean."},
-            files={"graph.json": _MINIMAL_GRAPH_JSON},
-        )
-    return AgentResult(text="", decision={})
-
-
-def _scenario_reject_then_approve(kind: str, state: dict, progress: Optional[ProgressCb]) -> AgentResult:
-    # Exercises the review→build feedback loop: first review rejects with a
-    # CRITICAL finding, the re-entered build round fixes it, second review
-    # approves. Also asserts the feedback actually reached the build state.
-    if kind == "build":
-        fixed = bool(state.get("review_feedback_json"))
-        return AgentResult(
-            text="Fixed per review feedback." if fixed else "First build attempt.",
-            decision={
-                "done": True,
-                "status": "built",
-                "graph_id": "G-fixed" if fixed else "G-draft",
-                "artifact_id": "A-fixed" if fixed else "A-draft",
-            },
-            files={"flow.yaml": _MINIMAL_FLOW_YAML},
-        )
-    if kind == "review":
-        if int(state.get("review_rounds", 0)) <= 1:
-            return AgentResult(
-                text="Found a critical issue.",
-                decision={
-                    "approved": False,
-                    "findings": [
-                        {"severity": "critical", "what": "output field is a false-green", "fix_hint": "assert real value"}
-                    ],
-                },
-            )
-        return AgentResult(
-            text="Fix confirmed.",
-            decision={"approved": True, "summary": "Second pass clean."},
-            files={"graph.json": _MINIMAL_GRAPH_JSON},
-        )
-    return AgentResult(text="", decision={})
-
-
-def _scenario_always_reject(kind: str, state: dict, progress: Optional[ProgressCb]) -> AgentResult:
-    # Drives the reject-budget exhaustion path: review never approves, so the
-    # review node must eventually emit final=true / status=failed itself.
-    if kind == "build":
-        return AgentResult(
-            text="Built.",
-            decision={"done": True, "status": "built"},
-            files={"flow.yaml": _MINIMAL_FLOW_YAML},
-        )
-    if kind == "review":
-        return AgentResult(
-            text="Still broken.",
-            decision={
-                "approved": False,
-                "findings": [{"severity": "critical", "what": "does not satisfy the request"}],
+                "graph.json": _MINIMAL_GRAPH_JSON,
             },
         )
     return AgentResult(text="", decision={})
 
 
 def _scenario_claims_built_no_file(kind: str, state: dict, progress: Optional[ProgressCb]) -> AgentResult:
-    # Reproduces a live incident: a build turn reasoned itself into believing
-    # it was finished and emitted {"done": true, "status": "built"} without
-    # ever writing flow.yaml. build_step must not trust this claim.
+    # Round 1 reproduces a live incident: the agent claims done/built without
+    # writing flow.yaml — build_step must not trust the claim (loop continues).
+    # Round 2 delivers, so this doubles as the self-loop narration fixture.
     if kind == "build":
-        return AgentResult(text="Done.", decision={"done": True, "status": "built"}, files={})
+        if int(state.get("round", 1)) <= 1:
+            return AgentResult(text="Done.", decision={"done": True, "status": "built"}, files={})
+        return AgentResult(
+            text="Second round: actually built and saved.",
+            decision={"done": True, "status": "built", "graph_id": "G-round2",
+                      "artifact_id": "A-round2", "summary": "Built on the second round."},
+            files={"flow.yaml": _MINIMAL_FLOW_YAML, "graph.json": _MINIMAL_GRAPH_JSON},
+        )
     return AgentResult(text="", decision={})
 
 
@@ -303,8 +257,6 @@ _MINIMAL_GRAPH_JSON = """{
 
 _SCENARIOS: dict[str, Callable[[str, dict, Optional[ProgressCb]], AgentResult]] = {
     "happy": _scenario_happy,
-    "reject_then_approve": _scenario_reject_then_approve,
-    "always_reject": _scenario_always_reject,
     "gave_up": _scenario_gave_up,
     "claims_built_no_file": _scenario_claims_built_no_file,
     "default": _scenario_happy,
@@ -355,20 +307,41 @@ def _run_real_agent(
     async def _drive() -> AgentResult:
         opts = ClaudeAgentOptions(
             cwd=workspace.root,
-            # An honest build round (search → inspect → author → validate →
-            # preview → compile → run×3 → save) is many tool rounds; a review
-            # re-runs the oracle from scratch. The SDK RAISES on max-turns
-            # (found live), so keep both generous — the wall-clock guard below
-            # is the real budget.
-            max_turns=50 if kind == "build" else 30,
+            # 0.3.0: the panel's model selector rides state["model"]; Sonnet
+            # default. The SDK RAISES on max-turns (found live), so keep it
+            # generous — the wall-clock guard below is the real budget.
+            model=str(state.get("model") or DEFAULT_MODEL),
+            max_turns=50,
             allowed_tools=["Read", "Write", "Grep", "Glob", "Bash"],
             env=dict(workspace.env, ANTHROPIC_API_KEY=anthropic_key),
         )
+        # STEP-line watcher: the prompt asks the agent to print `STEP: <phase>`
+        # at phase transitions; each becomes a structured step_started progress
+        # frame so the panel shows a live checklist instead of silence during
+        # thinking gaps. Pieces can split lines — keep a line buffer.
+        line_buf = ""
+        last_step = ""
+        def _scan_steps(piece: str) -> None:
+            nonlocal line_buf, last_step
+            line_buf += piece
+            while "\n" in line_buf:
+                line, line_buf = line_buf.split("\n", 1)
+                stripped = line.strip()
+                if stripped.startswith("STEP:"):
+                    step = stripped[len("STEP:"):].strip()[:80]
+                    if step:
+                        if last_step:
+                            _emit(progress, "step_completed", {"step": last_step})
+                        _emit(progress, "step_started", {"step": step})
+                        last_step = step
         async for msg in query(prompt=prompt, options=opts):
             piece = _message_text(msg)
             if piece:
                 text_parts.append(piece)
                 _emit(progress, "text_delta", {"text": piece})
+                _scan_steps(piece)
+        if last_step:
+            _emit(progress, "step_completed", {"step": last_step})
         return AgentResult(text="".join(text_parts))
 
     # Wall-clock guard well under the 660 s sidecar ceiling.
@@ -392,9 +365,6 @@ def _run_real_agent(
             # An unfinished build chunk is not "done" — let the self-loop
             # continue from the harvested state.
             result.decision.setdefault("done", False)
-        if kind == "review":
-            # An unfinished review must not read as an approval.
-            result.decision.setdefault("approved", False)
         result.decision.setdefault("budget_exhausted", True)
         _log_exc = f"{type(exc).__name__}: {exc}"
         print(f"agent turn degraded to partial reply after: {_log_exc}", flush=True)
@@ -453,8 +423,7 @@ def _parse_decision(text: str) -> dict:  # pragma: no cover
 
 # Which workspace files each phase's node harvests back into structured state.
 HARVEST_NAMES = {
-    "build": ("flow.yaml", "worklog.md", "evidence.json"),
-    "review": ("graph.json", "review.json"),
+    "build": ("flow.yaml", "worklog.md", "evidence.json", "graph.json"),
 }
 
 

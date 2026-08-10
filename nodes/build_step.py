@@ -1,3 +1,5 @@
+import subprocess
+
 from gen.messages_pb2 import BuildState
 from gen.axiom_context import AxiomContext
 
@@ -6,41 +8,43 @@ from nodes import _runtime as rt
 # Self-imposed round budget. The flow's loop max_iterations is only the
 # backstop — the node bounds itself so exhaustion produces an honest gave_up
 # instead of a silent loop-cap stall.
-MAX_BUILD_ROUNDS = 8
+MAX_BUILD_ROUNDS = 5
 
-# The build phase's whole policy. Condensed from the battle-tested
-# axiom-flow-authoring / flow-seeding playbook (the same workflow that seeded
-# the marketplace's published flows) — the agent IS the workflow; the flow
-# graph around it only provides durability, chunking and independent review.
-BUILD_PROMPT = """You are Flow Architect's BUILD agent: turn the user's request into a working, \
-tested Axiom flow, composing PUBLISHED marketplace components only (never author a new package). \
-You have the `axiom` CLI (already logged in) and the axiom-flow-authoring skill installed in \
-your working directory — the skill is authoritative for flow.yaml mechanics.
+# The build phase's whole policy — the 0.3.0 SPEED bar. The output is a DRAFT
+# on the user's canvas: the user sees the wired graph, can run it, and can ask
+# again. Speed beats certainty; a 90-second draft that's occasionally wrong is
+# worth more than a 15-minute one that's always right.
+BUILD_PROMPT = """You are Flow Architect's BUILD agent: turn the user's request into a working Axiom \
+flow DRAFT, composing PUBLISHED marketplace components only (never author a new package). You \
+have the `axiom` CLI (already logged in) and the axiom-flow-authoring skill in your working \
+directory — the skill is authoritative for flow.yaml mechanics.
 
-MATCH YOUR EFFORT TO THE TASK. A simple request (one or two obvious nodes) should be planned, \
-built, tested and saved in THIS single session — do not spread trivial work across rounds. \
-Only genuinely large builds should end a round unfinished (done=false) to continue next round.
+SPEED IS THE BAR. Your output is a draft the user sees on their canvas and can run themselves — \
+not a marketplace publish. Target ONE fast session: find parts, wire, compile, one smoke run, \
+save. Do NOT: call the planner flow, test-invoke individual nodes, preview every edge mapping, \
+or run multiple test inputs. If a choice is ambiguous, pick the most obvious node and move on.
 
-THE WORKFLOW (skip steps that are obviously unnecessary for a trivial task):
-1. Resume check: if flow.yaml / worklog.md / feedback.md exist in the working directory, a
-   prior round or a reviewer left them — build on that work, never restart from scratch.
-2. If draft.graph.json exists (the user's existing canvas), convert it to a starting flow.yaml:
+THE WORKFLOW:
+1. Resume check: if flow.yaml / worklog.md exist, a prior round left them — continue, never
+   restart. If draft.graph.json exists (the user's existing canvas), start from it:
    `axiom flow pull --from-file draft.graph.json -o flow.yaml`.
-3. Optionally get a plan skeleton: `axiom flow run christiangeorgelucas/flow-planner-fanout
-   -d '{"description":"<one-line task>"}'` (the published planner flow). It is ADVISORY
-   (~71% accurate): confirm every pick with `axiom search --type nodes`, `axiom info <pkg>`,
-   `axiom inspect node <pkg>/<Node>` before wiring; substitute freely.
-4. Author flow.yaml at the TOP LEVEL of the working directory (exactly `flow.yaml` — files in
-   subdirectories are invisible to the platform). Typed input_facade/output_facade with real
-   named fields are MANDATORY; every facade field and message needs a description.
-5. Verify, in order: `axiom flow validate` (zero warnings), `axiom flow preview` each nontrivial
-   edge mapping, `axiom flow compile` (note the artifact id), then LIVE-RUN the compiled
-   artifact with `axiom flow run <artifact-id> -d '<json>'` on THREE inputs — happy-path,
-   sparse (optionals absent / lists empty), and bad/malformed (must yield a clean typed
-   negative, not a traceback). Assert every meaningful output field carries a REAL value.
-   For a node you cannot safely live-invoke (keyed/write-path), use `axiom flow mock add` and
-   disclose the mock in your evidence. Cold-start 502 on first invoke is normal — retry once.
-6. Save the draft: `axiom flow save flow.yaml` (note the GRAPH id). Do NOT publish — ever.
+2. Find parts: `axiom search --type nodes <capability>` and `axiom inspect node <pkg>/<Node>`
+   for the exact field names of the nodes you pick. Two or three searches, not a survey.
+3. Author flow.yaml at the TOP LEVEL of the working directory. Typed input_facade/output_facade
+   with real named fields are MANDATORY; one-line descriptions everywhere.
+4. `axiom flow validate` (fix warnings), then `axiom flow compile` (note the artifact id).
+5. ONE smoke run: `axiom flow run <artifact-id> -d '<realistic json>'` — confirm the output
+   fields carry real values. Cold-start 502 on first invoke is normal — retry once. If a node
+   can't be safely live-invoked (keyed/write-path), skip the smoke run and say so in summary.
+6. Finish (your LAST steps, exactly once, only when everything above is done):
+   `axiom flow save flow.yaml` (note the GRAPH id — save creates a new document every time, so
+   never save twice; if a prior round already saved and flow.yaml changed since, save the new
+   version and report the NEWEST graph id), then `axiom flow assemble flow.yaml -o graph.json`.
+   Do NOT publish — ever.
+
+PROGRESS: print a line `STEP: <short phase>` as you start each phase (e.g. `STEP: searching the
+marketplace`, `STEP: wiring the flow`, `STEP: compiling`, `STEP: smoke run`, `STEP: saving`).
+The user watches these live — keep them short and human.
 
 LANDMINES (each has shipped a real bug; the skill has depth on all of them):
 - Field casing is snake_case everywhere in CEL/jq paths; confirm real names via `axiom inspect`.
@@ -50,17 +54,8 @@ LANDMINES (each has shipped a real bug; the skill has depth on all of them):
   durations are NANOSECONDS (`.getSeconds()` for seconds).
 - Nested facade message_names are GLOBAL — prefix them uniquely.
 - One forward edge per (source, destination) pair.
-- Gate consistency: ok:true and a non-empty error must never co-occur; degenerate inputs must
-  behave exactly as your facade descriptions promise.
 
-RECORD AS YOU GO (top-level files, harvested as this round's output):
-- worklog.md — steps done / remaining (your resume ledger).
-- evidence.json — {"graph_id": "...", "artifact_id": "...", "runs": [{"input": ..., "output":
-  ..., "ok": true}]} — the honest record of what you actually ran. The independent reviewer
-  re-verifies from scratch; fabricated evidence WILL be caught and bounced back.
-
-If feedback.md exists, a reviewer REJECTED the previous result — address every critical
-finding before claiming done again.
+Keep worklog.md current (a few lines: done / remaining) so an interrupted round can resume.
 
 If the marketplace genuinely lacks a needed capability, stop and report the gap honestly —
 never improvise or fabricate a node reference.
@@ -71,11 +66,11 @@ decision):
 ```axiom-decision
 {"done": false}
 ```
-(made progress; the loop continues next round from your files)
+(ran out of room; the loop continues next round from your files)
 ```axiom-decision
-{"done": true, "status": "built", "graph_id": "<from flow save>", "artifact_id": "<from compile>"}
+{"done": true, "status": "built", "graph_id": "<from flow save>", "artifact_id": "<from compile>", "summary": "<one line: what the flow does + what you verified>"}
 ```
-(fully built, verified and saved THIS session — goes to independent review)
+(built and saved THIS session)
 ```axiom-decision
 {"done": true, "status": "gave_up", "gap": {"reason": "<why>", "missing": ["<capability>"]}}
 ```
@@ -91,8 +86,16 @@ def build_step(ax: AxiomContext, input: BuildState) -> BuildState:
     """
     out = BuildState()
     out.CopyFrom(input)
+
+    # WARMUP: an empty request is the panel's pre-warm ping for this
+    # scale-to-zero pod. Return before touching secrets or the agent so the
+    # ping is cheap and needs nothing configured.
+    if not input.user_request:
+        out.done = True
+        out.status = "warmup"
+        return out
+
     out.round = input.round + 1
-    out.review_feedback_json = ""  # consumed this round; never re-applied stale
 
     anthropic, has_anthropic = ax.secrets.get("ANTHROPIC_API_KEY")
     if not has_anthropic:
@@ -120,13 +123,10 @@ def build_step(ax: AxiomContext, input: BuildState) -> BuildState:
             ws.write("evidence.json", input.test_evidence_json)
         if input.client_graph_json:
             ws.write("draft.graph.json", input.client_graph_json)
-        if input.review_feedback_json:
-            ws.write("feedback.md", input.review_feedback_json)
 
     state = {
         "user_request": input.user_request,
         "round": int(out.round),
-        "review_feedback_json": input.review_feedback_json,
         "draft_graph_id": input.draft_graph_id,
         "graph_id": input.graph_id,
         "artifact_id": input.artifact_id,
@@ -144,10 +144,14 @@ def build_step(ax: AxiomContext, input: BuildState) -> BuildState:
         out.work_log_json = result.files["worklog.md"]
     if "evidence.json" in result.files:
         out.test_evidence_json = result.files["evidence.json"]
+    if "graph.json" in result.files:
+        out.updated_graph_json = result.files["graph.json"]
     if decision.get("graph_id"):
         out.graph_id = str(decision["graph_id"])
     if decision.get("artifact_id"):
         out.artifact_id = str(decision["artifact_id"])
+    if decision.get("summary"):
+        out.summary = str(decision["summary"])[:500]
     out.progress_note = result.text[:500]
 
     if decision.get("done"):
@@ -156,7 +160,7 @@ def build_step(ax: AxiomContext, input: BuildState) -> BuildState:
             # Don't trust an unverified "done" claim (found live: a build turn
             # emitted done/built without ever writing flow.yaml). Keep looping
             # — bounded by MAX_BUILD_ROUNDS — so the agent gets a real retry
-            # instead of an evidence-free claim reaching review.
+            # instead of an evidence-free claim reaching the canvas.
             out.progress_note = (
                 "(claimed done/built but produced no flow.yaml — retrying) " + out.progress_note
             )[:500]
@@ -166,6 +170,17 @@ def build_step(ax: AxiomContext, input: BuildState) -> BuildState:
             if decision.get("gap"):
                 out.status = "gave_up"
                 out.gap_json = rt.dumps(decision.get("gap"))
+            elif not out.updated_graph_json and ws is not None and out.flow_yaml.strip():
+                # The agent finished but skipped the assemble step — the graph
+                # is what the editor applies, so produce it deterministically
+                # (ported from the removed reviewer, where it was proven).
+                proc = subprocess.run(
+                    ["axiom", "flow", "assemble", "flow.yaml"],
+                    cwd=ws.root, env=ws.env, capture_output=True, text=True,
+                    timeout=120, check=False,
+                )
+                if proc.returncode == 0:
+                    out.updated_graph_json = proc.stdout.strip()
     ax.log.info("build round", round=int(out.round), done=bool(out.done), status=out.status)
     return out
 

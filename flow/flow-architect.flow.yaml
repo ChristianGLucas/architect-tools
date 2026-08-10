@@ -1,25 +1,22 @@
 # Flow Architect — AI flow author, as an Axiom flow.
 #
-# Redesign (founder directive 2026-08-10): a BUILD ↔ REVIEW agent pair, not a
-# chat-turn state machine. The build node is Claude Code with the axiom CLI +
-# flow-authoring skill (it plans via the published planner flow, searches the
-# marketplace, authors, live-tests, saves); the review node is an INDEPENDENT
-# second agent that re-verifies from scratch. The flow graph provides only
-# what agents can't: durability, chunking under the per-call ceiling, the
-# builder≠reviewer boundary, and typed error routing.
+# 0.3.0 (founder speed directive 2026-08-10): a SINGLE fast build agent with a
+# bounded self-loop. The independent review agent was removed — the output is
+# a DRAFT on the user's canvas that the user reviews and runs themselves;
+# speed beats certainty. The flow graph provides only what the agent can't:
+# durability, chunking under the per-call ceiling, and typed error routing.
 #
-#   @flow_input → build ⟲ (bounded rounds) → review → finalize → @flow_output
-#                    ▲______________________|  (rejected, bounded)
-#   build ─[gave_up]→ finalize;  on_error(build|review) → err_shape → finalize
+#   @flow_input → build ⟲ (bounded rounds) → finalize → @flow_output
+#   build ─[gave_up]→ finalize;  on_error(build) → err_shape → finalize
 
 name: christiangeorgelucas/flow-architect
-version: 0.2.1
+version: 0.3.0
 description: >-
   AI flow author. Give it a request (and optionally your current draft canvas)
-  and it plans, builds, live-tests and saves an Axiom flow composed from
-  published marketplace components — then an independent reviewer agent
-  re-verifies the result before it ships. Compose-only: refuses honestly when
-  the marketplace lacks the needed nodes.
+  and a fast build agent plans, wires, compiles, smoke-tests and saves an
+  Axiom flow composed from published marketplace components — a draft on your
+  canvas in a couple of minutes. Compose-only: refuses honestly when the
+  marketplace lacks the needed nodes.
 
 input_facade:
   message_name: ArchitectRequest
@@ -36,7 +33,7 @@ input_facade:
       description: The user's request — what the flow should do.
     model:
       kind: string
-      description: Optional Anthropic model override.
+      description: Optional Anthropic model override (default claude-sonnet-5).
   example_input:
     graph_id: ""
     graph_source_json: ""
@@ -59,12 +56,15 @@ output_facade:
     flow_yaml:
       kind: string
       description: The final flow.yaml (status done; possibly partial on failed).
+    graph_id:
+      kind: string
+      description: The saved draft GRAPH artifact id — the editor binds the open tab to this document (status done).
     missing_capabilities_json:
       kind: string
       description: Gap detail (status refused).
     verify_report_json:
       kind: string
-      description: The independent reviewer's report (status done).
+      description: Legacy reviewer report — empty in 0.3.0.
     error:
       kind: string
       description: Failure description (status failed).
@@ -76,25 +76,19 @@ run_config:
 
 nodes:
   - alias: build
-    package: christiangeorgelucas/architect-tools@0.2.1
+    package: christiangeorgelucas/architect-tools@0.3.0
     node: BuildStep
     config:
       retry: { max_attempts: 2, initial_interval_ms: 1000, backoff_coefficient: 2.0 }
 
-  - alias: review
-    package: christiangeorgelucas/architect-tools@0.2.1
-    node: ReviewStep
-    config:
-      retry: { max_attempts: 2, initial_interval_ms: 1000, backoff_coefficient: 2.0 }
-
   - alias: err_shape
-    package: christiangeorgelucas/architect-tools@0.2.1
+    package: christiangeorgelucas/architect-tools@0.3.0
     node: ErrShape
     config:
       join: { kind: XOR }
 
   - alias: finalize
-    package: christiangeorgelucas/architect-tools@0.2.1
+    package: christiangeorgelucas/architect-tools@0.3.0
     node: FinalizeResult
     config:
       join: { kind: XOR }
@@ -109,7 +103,7 @@ edges:
   - from: build
     to: build
     loop: true
-    max_iterations: 10
+    max_iterations: 6
     condition: { op: CEL, cel: '!done' }
     adapter:
       user_request: user_request
@@ -121,14 +115,13 @@ edges:
       artifact_id: artifact_id
       test_evidence_json: test_evidence_json
       work_log_json: work_log_json
-      review_feedback_json: review_feedback_json
       round: round
-      review_rounds: review_rounds
 
-  # Build claims done+built → independent review (same message type; bare edge).
+  # Build finished → terminal result (the user is the reviewer now).
   - from: build
-    to: review
+    to: finalize
     condition: { op: CEL, cel: 'done && status == "built"' }
+    adapter: { status: "'done'", summary: summary, updated_graph_json: updated_graph_json, flow_yaml: flow_yaml, graph_id: graph_id, error: error }
 
   # Build gave up honestly (capability gap or budget) → refusal.
   - from: build
@@ -136,37 +129,10 @@ edges:
     condition: { op: CEL, cel: 'done && status == "gave_up"' }
     adapter: { status: "'refused'", summary: "'Could not build this from published marketplace components.'", missing_capabilities_json: gap_json, error: error, flow_yaml: flow_yaml }
 
-  # Review rejected → back into the build loop with structured findings.
-  - from: review
-    to: build
-    loop: true
-    max_iterations: 4
-    condition: { op: CEL, cel: '!final' }
-    adapter:
-      user_request: user_request
-      client_graph_json: client_graph_json
-      draft_graph_id: draft_graph_id
-      model: model
-      flow_yaml: flow_yaml
-      graph_id: graph_id
-      artifact_id: artifact_id
-      test_evidence_json: test_evidence_json
-      work_log_json: work_log_json
-      review_feedback_json: findings_json
-      round: round
-      review_rounds: review_rounds
-
-  # Review final verdict (approved, or reject budget exhausted) → terminal.
-  - from: review
-    to: finalize
-    condition: { op: CEL, cel: 'final' }
-    adapter: { status: status, summary: summary, updated_graph_json: updated_graph_json, flow_yaml: flow_yaml, verify_report_json: report_json, error: error }
-
   # Error funnel. err_shape stays separate from finalize because a (from,to)
   # pair cannot carry both a normal and an on_error edge.
   - { from: build, to: err_shape, on_error: true, adapter: { reason: message } }
-  - { from: review, to: err_shape, on_error: true, adapter: { reason: message } }
   - { from: err_shape, to: finalize }
 
   # Terminal.
-  - { from: finalize, to: "@flow_output", adapter: { status: status, summary: summary, updated_graph_json: updated_graph_json, flow_yaml: flow_yaml, missing_capabilities_json: missing_capabilities_json, verify_report_json: verify_report_json, error: error } }
+  - { from: finalize, to: "@flow_output", adapter: { status: status, summary: summary, updated_graph_json: updated_graph_json, flow_yaml: flow_yaml, graph_id: graph_id, missing_capabilities_json: missing_capabilities_json, verify_report_json: verify_report_json, error: error } }

@@ -1,14 +1,14 @@
 name: christiangeorgelucas/architect-tools
-version: 0.2.1
+version: 0.3.0
 language: python
 description: >-
   Flow Architect node package — the agentic backend of the AI flow author.
-  A build↔review agent pair: the build node runs Claude Code (via the
-  Anthropic Agent SDK) with the axiom CLI and the flow-authoring skill to
-  plan, build, and live-test an Axiom flow from published marketplace
-  components; the review node is an independent second agent that re-verifies
-  the result from scratch before it ships. Compose-only: refuses honestly
-  when the marketplace lacks the needed nodes.
+  A single fast build agent: Claude Code (via the Anthropic Agent SDK, Sonnet
+  by default) with the axiom CLI and the flow-authoring skill finds published
+  marketplace components, wires them into a flow, compiles, smoke-tests, and
+  saves the draft — tuned for speed (the output is a canvas draft the user
+  reviews, not a marketplace publish). Compose-only: refuses honestly when
+  the marketplace lacks the needed nodes.
 
 build:
   # Python is the only language whose system_deps reach the RUNTIME image;
@@ -25,17 +25,13 @@ build:
 
 nodes:
   - name: BuildStep
-    description: One bounded build round (self-loop) — Claude Code + the axiom CLI plans, builds, live-tests and saves the flow.
+    description: >-
+      One bounded build round (self-loop) — Claude Code + the axiom CLI finds
+      marketplace nodes, wires the flow, compiles, smoke-tests once, and saves
+      the draft. An empty user_request is a cheap warmup ping (returns
+      immediately; used by the editor to pre-warm the pod).
     input: BuildState
     output: BuildState
-    required_secrets:
-      - ANTHROPIC_API_KEY
-      - AXIOM_API_KEY
-
-  - name: ReviewStep
-    description: Independent reviewer agent — re-runs the oracle from scratch; approves (assembled graph) or rejects with findings.
-    input: BuildState
-    output: ReviewVerdict
     required_secrets:
       - ANTHROPIC_API_KEY
       - AXIOM_API_KEY

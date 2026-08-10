@@ -11,11 +11,26 @@ def test_scripted_one_shot_builds():
     assert out.graph_id == "G-scripted"
     assert out.artifact_id == "A-scripted"
     assert out.test_evidence_json != ""
+    # 0.3.0: the build itself delivers the editor graph + a one-line summary
+    # (no reviewer to produce them anymore).
+    assert '"nodes"' in out.updated_graph_json
+    assert out.summary != ""
     assert out.round == 1
 
 
+def test_empty_request_is_a_cheap_warmup_ping():
+    # The panel pre-warms the scale-to-zero pod by invoking with an empty
+    # request. Must return immediately WITHOUT touching secrets — an
+    # ungranted tenant's ping should not fail on secret delivery.
+    out = build_step(Ctx(secrets={}), BuildState())
+    assert out.done is True
+    assert out.status == "warmup"
+    assert out.round == 0
+    assert out.error == ""
+
+
 def test_missing_key_gives_up_cleanly():
-    out = build_step(Ctx(secrets={"AXIOM_API_KEY": "x"}), BuildState())
+    out = build_step(Ctx(secrets={"AXIOM_API_KEY": "x"}), BuildState(user_request="x"))
     assert out.done is True
     assert out.status == "gave_up"
 
@@ -23,7 +38,7 @@ def test_missing_key_gives_up_cleanly():
 def test_round_budget_exhaustion_gives_up_honestly():
     # The node bounds itself: exhaustion must produce a structured gave_up
     # (routable to an honest refusal), never a silent loop-cap stall.
-    out = build_step(Ctx("happy"), BuildState(round=MAX_BUILD_ROUNDS))
+    out = build_step(Ctx("happy"), BuildState(user_request="x", round=MAX_BUILD_ROUNDS))
     assert out.done is True
     assert out.status == "gave_up"
     assert "budget exhausted" in out.error
@@ -33,13 +48,23 @@ def test_round_budget_exhaustion_gives_up_honestly():
 def test_claimed_built_without_flow_yaml_keeps_looping():
     # Live incident: a build turn emitted {"done": true, "status": "built"}
     # without ever writing flow.yaml. build_step must not trust the claim —
-    # the self-loop should get another real chance instead of handing review
-    # an empty flow.
-    out = build_step(Ctx("claims_built_no_file"), BuildState())
+    # the self-loop should get another real chance instead of handing the
+    # canvas an empty flow.
+    out = build_step(Ctx("claims_built_no_file"), BuildState(user_request="x"))
     assert out.done is False
     assert out.status == ""
     assert out.flow_yaml == ""
     assert "retrying" in out.progress_note
+
+
+def test_second_round_completes_after_a_hollow_claim():
+    # Round 2 of the same scenario delivers — pins that the self-loop carries
+    # enough state for the retry to finish (round counter drives the fixture).
+    out = build_step(Ctx("claims_built_no_file"), BuildState(user_request="x", round=1))
+    assert out.done is True
+    assert out.status == "built"
+    assert out.graph_id == "G-round2"
+    assert '"nodes"' in out.updated_graph_json
 
 
 def test_capability_gap_becomes_gave_up_with_detail():
@@ -47,19 +72,3 @@ def test_capability_gap_becomes_gave_up_with_detail():
     assert out.done is True
     assert out.status == "gave_up"
     assert "no published node" in out.gap_json
-
-
-def test_review_feedback_reaches_the_agent_and_is_consumed():
-    # The reject_then_approve scenario's build turn reports G-fixed only when
-    # it actually saw feedback in its state — pinning that the loop-back
-    # feedback is delivered, and that it is cleared after being consumed
-    # (never re-applied stale on a later round).
-    fed = build_step(
-        Ctx("reject_then_approve"),
-        BuildState(user_request="x", review_feedback_json='[{"severity":"critical"}]', round=1, review_rounds=1),
-    )
-    assert fed.graph_id == "G-fixed"
-    assert fed.review_feedback_json == ""
-
-    fresh = build_step(Ctx("reject_then_approve"), BuildState(user_request="x"))
-    assert fresh.graph_id == "G-draft"

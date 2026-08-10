@@ -1,12 +1,13 @@
 // Data contracts for christiangeorgelucas/architect-tools — the node package
 // behind the Flow Architect flow (AI flow authoring).
 //
-// Design (founder redesign 2026-08-10): the flow is a BUILD ↔ REVIEW agent
-// pair, not a chat-turn state machine. BuildState is the single working-state
-// carrier: it enters from the flow input, rides the build node's bounded
-// self-loop (each iteration one wall-clock-guarded agent chunk), and crosses
-// to the review node when the build claims done. ReviewVerdict routes either
-// back to build (rejected, with findings) or out to the terminal result.
+// Design (founder redesign 2026-08-10, speed rework 0.3.0): a SINGLE build
+// agent with a bounded self-loop. BuildState is the working-state carrier: it
+// enters from the flow input, rides the build node's self-loop (each iteration
+// one wall-clock-guarded agent chunk), and exits to the terminal result when
+// the build claims done. The independent review agent was removed for speed —
+// the output is a DRAFT on the user's canvas, not a marketplace publish; the
+// user is the reviewer.
 // All *_json fields are JSON-serialized blobs — the platform types the
 // envelope, the agent owns the payload shapes; every field rides node outputs
 // because /tmp is per-pod and nothing else persists across loop iterations.
@@ -15,18 +16,24 @@ syntax = "proto3";
 
 package christiangeorgelucas.architect_tools;
 
-// BuildState rides @flow_input → build → (self-loop) → review, and back from
-// a rejecting review. The /tmp workspace is re-materialized from these fields
-// every iteration.
+// BuildState rides @flow_input → build → (self-loop) → terminal edges. The
+// /tmp workspace is re-materialized from these fields every iteration.
+//
+// Field numbers 10/12 (review_feedback_json / review_rounds) belonged to the
+// removed review loop and stay RESERVED — never reuse the numbers: the
+// worker's engine cache is FQN-keyed and renumbering a live message corrupts
+// edge evaluation on warm pods.
 message BuildState {
   // user_request is the user's ask — the assignment the build agent works to.
+  // Empty user_request is the WARMUP ping: the node returns immediately
+  // (status "warmup") so the panel can pre-warm the scale-to-zero pod.
   string user_request = 1;
   // client_graph_json is the serialized canvas (SourceGraph JSON) of an
   // existing editor draft to modify; "" for a brand-new flow.
   string client_graph_json = 2;
   // draft_graph_id is the editor GRAPH artifact id; "" for a brand-new flow.
   string draft_graph_id = 3;
-  // model optionally overrides the Anthropic model.
+  // model optionally overrides the Anthropic model (default claude-sonnet-5).
   string model = 4;
   // flow_yaml is the working flow.yaml being built/edited.
   string flow_yaml = 5;
@@ -34,22 +41,18 @@ message BuildState {
   string graph_id = 6;
   // artifact_id is the compiled runnable artifact id (from `axiom flow compile`).
   string artifact_id = 7;
-  // test_evidence_json is the build agent's own oracle record: the inputs it
-  // ran and the outputs it asserted on. Advisory — review re-verifies.
+  // test_evidence_json is the build agent's smoke-run record. Advisory.
   string test_evidence_json = 8;
   // work_log_json is the agent's own progress ledger (steps done / remaining).
   string work_log_json = 9;
-  // review_feedback_json carries a rejecting review's findings back into the
-  // next build round; "" on the first pass.
-  string review_feedback_json = 10;
+  reserved 10, 12;
+  reserved "review_feedback_json", "review_rounds";
   // round counts build-node invocations (self-imposed budget guard; the
   // flow's loop max_iterations is only the backstop).
   int64 round = 11;
-  // review_rounds counts completed review passes (bounds the reject cycle).
-  int64 review_rounds = 12;
   // done is the self-loop exit signal.
   bool done = 13;
-  // status is "" while looping, then "built" or "gave_up".
+  // status is "" while looping, then "built", "gave_up", or "warmup".
   string status = 14;
   // gap_json is set when the build stopped on a CONFIRMED capability gap —
   // the terminal path maps it to an honest refusal with this detail.
@@ -58,45 +61,11 @@ message BuildState {
   string progress_note = 16;
   // error carries a chunk-level failure description.
   string error = 17;
-}
-
-// ReviewVerdict is the independent reviewer's outcome. final=true routes to
-// the terminal result; final=false loops back to build with findings. The
-// carried_* prefix-free state fields exist because the loop-back edge must
-// reconstruct a BuildState — /tmp does not survive between nodes.
-message ReviewVerdict {
-  // final is true when the session ends here (approved, or reject budget
-  // exhausted); false loops back to build for another round.
-  bool final = 1;
-  // approved is true only when the review found zero CRITICAL findings.
-  bool approved = 2;
-  // status is "done" (approved) or "failed" (reject budget exhausted); ""
-  // while looping back.
-  string status = 3;
-  // summary is the reviewer's human-readable verdict.
-  string summary = 4;
-  // findings_json is the structured findings list (severity, what, fix_hint).
-  string findings_json = 5;
-  // report_json is the reviewer's full re-verification record (its own runs).
-  string report_json = 6;
-  // updated_graph_json is the assembled SourceGraph (approved only).
-  string updated_graph_json = 7;
-  // error describes the failure when status is "failed".
-  string error = 8;
-  // flow_yaml / graph_id / artifact_id / test_evidence_json / work_log_json /
-  // user_request / client_graph_json / draft_graph_id / model / round /
-  // review_rounds carry the session state for the loop-back edge.
-  string flow_yaml = 9;
-  string graph_id = 10;
-  string artifact_id = 11;
-  string test_evidence_json = 12;
-  string work_log_json = 13;
-  string user_request = 14;
-  string client_graph_json = 15;
-  string draft_graph_id = 16;
-  string model = 17;
-  int64 round = 18;
-  int64 review_rounds = 19;
+  // summary is the agent's one-line outcome description (done rounds only).
+  string summary = 18;
+  // updated_graph_json is the assembled SourceGraph (`axiom flow assemble`)
+  // the editor applies to the canvas (done+built rounds only).
+  string updated_graph_json = 19;
 }
 
 // ErrInfo is the on_error edge funnel: the platform routes a failing node's
@@ -115,19 +84,26 @@ message ErrInfo {
 // numbering every value shifted one field over in the flow output (status
 // landed under "error", summary under "flow_yaml", …). Keep any new field in
 // alphabetical position or the flow output silently corrupts again.
+// (0.3.0 inserted graph_id at 3 — a full renumber of the fields after it;
+// restart worker pods after deploying this version so the FQN-keyed engine
+// cache never mixes old and new descriptors.)
 message ArchitectResult {
   // error is the failure description (status "failed").
   string error = 1;
   // flow_yaml is the final flow.yaml (done; possibly partial on failed).
   string flow_yaml = 2;
+  // graph_id is the saved draft GRAPH artifact id — the editor binds the
+  // open tab to this document on Apply (status "done").
+  string graph_id = 3;
   // missing_capabilities_json is the refusal detail (status "refused").
-  string missing_capabilities_json = 3;
+  string missing_capabilities_json = 4;
   // status is one of "done", "refused", "failed", "cancelled".
-  string status = 4;
+  string status = 5;
   // summary is the human-readable outcome.
-  string summary = 5;
+  string summary = 6;
   // updated_graph_json is the SourceGraph to apply (status "done" only).
-  string updated_graph_json = 6;
-  // verify_report_json is the reviewer's full report (status "done").
-  string verify_report_json = 7;
+  string updated_graph_json = 7;
+  // verify_report_json is legacy (the removed reviewer's report) — kept for
+  // wire compatibility; empty in 0.3.0 results.
+  string verify_report_json = 8;
 }
