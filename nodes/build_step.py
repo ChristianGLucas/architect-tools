@@ -26,10 +26,10 @@ THE WORKFLOW (skip steps that are obviously unnecessary for a trivial task):
    prior round or a reviewer left them — build on that work, never restart from scratch.
 2. If draft.graph.json exists (the user's existing canvas), convert it to a starting flow.yaml:
    `axiom flow pull --from-file draft.graph.json -o flow.yaml`.
-3. Optionally get a plan skeleton: `axiom flow run 01KZMNJ1ZDQ62KRYQTGVGS8NR7 -d
-   '{"description":"<one-line task>"}' --timeout 300 --json` (the published planner flow).
-   It is ADVISORY (~71% accurate): confirm every pick with `axiom search --type nodes`,
-   `axiom info <pkg>`, `axiom inspect node <pkg>/<Node>` before wiring; substitute freely.
+3. Optionally get a plan skeleton: `axiom flow run christiangeorgelucas/flow-planner-fanout
+   -d '{"description":"<one-line task>"}'` (the published planner flow). It is ADVISORY
+   (~71% accurate): confirm every pick with `axiom search --type nodes`, `axiom info <pkg>`,
+   `axiom inspect node <pkg>/<Node>` before wiring; substitute freely.
 4. Author flow.yaml at the TOP LEVEL of the working directory (exactly `flow.yaml` — files in
    subdirectories are invisible to the platform). Typed input_facade/output_facade with real
    named fields are MANDATORY; every facade field and message needs a description.

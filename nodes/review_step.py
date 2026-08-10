@@ -37,7 +37,7 @@ the request, missing/untyped facade, secret leakage. Everything else is minor â€
 do not reject for it. Zero CRITICAL findings = approve.
 
 IF YOU APPROVE, produce the editor graph before ending your turn:
-`axiom flow assemble flow.yaml --json > graph.json`
+`axiom flow assemble flow.yaml -o graph.json`
 Optionally write review.json with your full run record (inputs, outputs, checks).
 
 Always end your final message with a decision block under this EXACT fence tag (never
@@ -108,7 +108,7 @@ def review_step(ax: AxiomContext, input: BuildState) -> ReviewVerdict:
             # deterministically; approval without an applicable graph is
             # useless to the editor.
             proc = subprocess.run(
-                ["axiom", "flow", "assemble", "flow.yaml", "--json"],
+                ["axiom", "flow", "assemble", "flow.yaml"],
                 cwd=ws.root, env=ws.env, capture_output=True, text=True, timeout=120, check=False,
             )
             if proc.returncode == 0:
