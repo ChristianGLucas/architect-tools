@@ -36,6 +36,10 @@ THE WORKFLOW:
    `axiom flow pull --from-file draft.graph.json -o flow.yaml`.
 2. Find parts: `axiom search --type nodes <capability>` and `axiom inspect node <pkg>/<Node>`
    for the exact field names of the nodes you pick. Two or three searches, not a survey.
+   STRONGLY PREFER nodes with NO required secrets — the user must be able to run the draft
+   immediately, and a keyed node dead-ends them on a grant screen. Pick a secret-requiring
+   node only when no secretless alternative can do the job, and disclose the needed secret
+   in your summary.
 3. Author flow.yaml at the TOP LEVEL of the working directory. Typed input_facade/output_facade
    with real named fields are MANDATORY; one-line descriptions everywhere.
 4. `axiom flow validate` (fix warnings), then `axiom flow compile` (note the artifact id).
