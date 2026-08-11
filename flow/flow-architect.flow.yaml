@@ -10,7 +10,7 @@
 #   build ─[gave_up]→ finalize;  on_error(build) → err_shape → finalize
 
 name: christiangeorgelucas/flow-architect
-version: 0.3.2
+version: 0.3.3
 description: >-
   AI flow author. Give it a request (and optionally your current draft canvas)
   and a fast build agent plans, wires, compiles, smoke-tests and saves an
@@ -76,19 +76,19 @@ run_config:
 
 nodes:
   - alias: build
-    package: christiangeorgelucas/architect-tools@0.3.2
+    package: christiangeorgelucas/architect-tools@0.3.3
     node: BuildStep
     config:
       retry: { max_attempts: 2, initial_interval_ms: 1000, backoff_coefficient: 2.0 }
 
   - alias: err_shape
-    package: christiangeorgelucas/architect-tools@0.3.2
+    package: christiangeorgelucas/architect-tools@0.3.3
     node: ErrShape
     config:
       join: { kind: XOR }
 
   - alias: finalize
-    package: christiangeorgelucas/architect-tools@0.3.2
+    package: christiangeorgelucas/architect-tools@0.3.3
     node: FinalizeResult
     config:
       join: { kind: XOR }

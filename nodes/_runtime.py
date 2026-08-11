@@ -340,8 +340,12 @@ def _run_real_agent(
             _emit(progress, "step_started", {"step": step})
             last_step = step
 
+        glued_step_re = re.compile(r"(?<!^)(?<!\n)(STEP:)")
         def _forward(piece: str, *, flush: bool = False) -> None:
             nonlocal line_buf
+            # Re-split STEP tokens welded mid-line (defense in depth for any
+            # upstream join that loses the newline).
+            piece = glued_step_re.sub(r"\n\1", piece)
             line_buf += piece
             out: list[str] = []
             while "\n" in line_buf:
@@ -406,11 +410,16 @@ def _run_real_agent(
 
 def _message_text(msg: Any) -> str:  # pragma: no cover
     # claude-agent-sdk yields typed messages; pull assistant text defensively.
+    # Blocks are JOINED WITH NEWLINES: the model emits logically-separate lines
+    # (e.g. its STEP: markers) as separate content blocks, and a bare "".join
+    # welded them into one line ("STEP: wiring the flowSTEP: compiling" —
+    # founder screenshot), defeating the line-anchored STEP extraction AND
+    # mangling the prose. Distinct blocks are distinct paragraphs.
     content = getattr(msg, "content", None)
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "".join(getattr(b, "text", "") for b in content if getattr(b, "text", ""))
+        return "\n".join(getattr(b, "text", "") for b in content if getattr(b, "text", ""))
     return ""
 
 
