@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -319,21 +320,25 @@ def _run_real_agent(
         # at phase transitions; each becomes a structured step_started progress
         # frame so the panel shows a live checklist instead of silence during
         # thinking gaps. Pieces can split lines — keep a line buffer.
-        line_buf = ""
+        # Regex, not line-anchored: seen live, the model emits STEP: tokens
+        # inline and back-to-back without newlines ("…directly (STEP: wiring
+        # the flow).STEP: compiling"). Capture up to a sentence/limit boundary.
+        step_re = re.compile(r"STEP:\s*([^\n.()]{1,80})")
+        scan_buf = ""
         last_step = ""
         def _scan_steps(piece: str) -> None:
-            nonlocal line_buf, last_step
-            line_buf += piece
-            while "\n" in line_buf:
-                line, line_buf = line_buf.split("\n", 1)
-                stripped = line.strip()
-                if stripped.startswith("STEP:"):
-                    step = stripped[len("STEP:"):].strip()[:80]
-                    if step:
-                        if last_step:
-                            _emit(progress, "step_completed", {"step": last_step})
-                        _emit(progress, "step_started", {"step": step})
-                        last_step = step
+            nonlocal scan_buf, last_step
+            scan_buf = (scan_buf + piece)[-4096:]
+            for m in step_re.finditer(scan_buf):
+                step = m.group(1).strip()
+                if step and step != last_step:
+                    if last_step:
+                        _emit(progress, "step_completed", {"step": last_step})
+                    _emit(progress, "step_started", {"step": step})
+                    last_step = step
+            # Keep only the tail that could hold a partial STEP: token.
+            cut = scan_buf.rfind("STEP:")
+            scan_buf = scan_buf[cut:] if cut != -1 and len(scan_buf) - cut < 96 else ""
         async for msg in query(prompt=prompt, options=opts):
             piece = _message_text(msg)
             if piece:
